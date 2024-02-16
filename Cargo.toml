@@ -1,0 +1,16 @@
+[package]
+name = "rust_openpgp_wasm"
+version = "0.1.0"
+edition = "2021"
+[lib]
+crate-type = ["cdylib", "rlib"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
+sequoia-openpgp = { version = "*", default-features = false, features = ["crypto-rust", "allow-experimental-crypto", "allow-variable-time-crypto"] }
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.1"
+serde_json = "1.0"
+base64= "0.13.0"
+console_error_panic_hook = "0.1.6"
