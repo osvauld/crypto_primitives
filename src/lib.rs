@@ -12,6 +12,7 @@ use std::time::Instant;
 use base64::{encode, decode};
 use crate::io::Cursor;
 use anyhow::Result;
+use openpgp::serialize::SerializeInto;
 
 #[wasm_bindgen(start)]
 pub fn start() -> Result<(), JsValue> {
@@ -21,19 +22,33 @@ pub fn start() -> Result<(), JsValue> {
 
 
 #[wasm_bindgen]
-pub fn generate_keys() -> Result<JsValue, JsValue> {
+pub fn generate_openpgp_keypair() -> Result<JsValue, JsValue> {
     let (cert, _revocation) = CertBuilder::new()
         .add_userid("someone@example.org")
         .add_transport_encryption_subkey()
         .generate()
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
 
-    // Serialize the cert to a byte vector
-    let cert_bytes = cert.as_tsk().serialize_into_vec().map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let cert_base64 = encode(&cert_bytes);
+    // Serialize the private key to an armored string.
+    let mut armored_private_key = Vec::new();
+    cert.as_tsk().serialize_into(&mut armored_private_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
 
-    Ok(JsValue::from_str(&cert_base64))
+    // Serialize the public key to an armored string.
+    let mut armored_public_key = Vec::new();
+    cert.serialize_into(&mut armored_public_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+
+    let base64_private_key = encode(&armored_private_key);
+    let base64_public_key = encode(&armored_public_key);
+    
+    // Convert the armored keys into `JsValue`.
+    Ok(to_value(&serde_json::json!({
+        "privateKey": base64_private_key,
+        "publicKey": base64_public_key,
+    })).map_err(|err| JsValue::from_str(&err.to_string()))?)
 }
+
 
 #[wasm_bindgen]
 pub fn encrypt_data(public_key_base64: &str, plaintext: &str) -> Result<JsValue, JsValue> {
