@@ -9,8 +9,10 @@ use openpgp::parse::{Parse, stream::*};
 use openpgp::policy::Policy;
 use std::io::{self, Write};
 use std::time::Instant;
+use serde_wasm_bindgen::to_value;
 use base64::{encode, decode};
-use crate::io::Cursor;
+use openpgp::policy::StandardPolicy;
+use std::io::Cursor;
 use anyhow::Result;
 use openpgp::serialize::SerializeInto;
 
@@ -49,39 +51,31 @@ pub fn generate_openpgp_keypair() -> Result<JsValue, JsValue> {
     })).map_err(|err| JsValue::from_str(&err.to_string()))?)
 }
 
-
 #[wasm_bindgen]
-pub fn encrypt_data(public_key_base64: &str, plaintext: &str) -> Result<JsValue, JsValue> {
-    let public_key_bytes = decode(public_key_base64).map_err(|e| e.to_string())?;
-    let cert = openpgp::Cert::from_bytes(public_key_bytes).map_err(|e| e.to_string())?;
+pub fn encrypt_message(public_key_b64: &str, plaintext: &str) -> Result<JsValue, JsValue> {
+    let public_key_bytes = decode(public_key_b64).map_err(|e| e.to_string())?;
+    let cert = Cert::from_bytes(&public_key_bytes).map_err(|e| e.to_string())?;
 
+    let policy = StandardPolicy::new();
     let mut encrypted_data = Vec::new();
-    {
-        let encryptor = Encryptor2::for_recipients(Cursor::new(&mut encrypted_data), &[&cert])
-            .build()
-            .map_err(|e| e.to_string())?;
-        encryptor.write_all(plaintext.as_bytes()).map_err(|e| e.to_string())?;
-        encryptor.finalize().map_err(|e| e.to_string())?;
-    }
+    encrypt(&policy, &mut encrypted_data, plaintext, &cert).map_err(|e| e.to_string())?;
 
-    let encrypted_base64 = encode(&encrypted_data);
-
-    Ok(JsValue::from_str(&encrypted_base64))
+    let encrypted_b64 = encode(&encrypted_data);
+    Ok(JsValue::from_str(&encrypted_b64))
 }
 
+
 #[wasm_bindgen]
-pub fn decrypt_data(private_key_base64: &str, encrypted_base64: &str) -> Result<JsValue, JsValue> {
-    let private_key_bytes = decode(private_key_base64).map_err(|e| e.to_string())?;
-    let cert = openpgp::Cert::from_bytes(private_key_bytes).map_err(|e| e.to_string())?;
+pub fn decrypt_message(private_key_b64: &str, encrypted_b64: &str) -> Result<JsValue, JsValue> {
+    let private_key_bytes = decode(private_key_b64).map_err(|e| e.to_string())?;
+    let cert = Cert::from_bytes(&private_key_bytes).map_err(|e| e.to_string())?;
 
-    let encrypted_bytes = decode(encrypted_base64).map_err(|e| e.to_string())?;
-    let mut decrypted_data = Vec::new();
-    {
-        let mut decryptor = Decryptor::from_bytes(Cursor::new(encrypted_bytes), &cert)
-            .map_err(|e| e.to_string())?;
-        std::io::copy(&mut decryptor, &mut decrypted_data).map_err(|e| e.to_string())?;
-    }
+    let encrypted_bytes = decode(encrypted_b64).map_err(|e| e.to_string())?;
+    let policy = StandardPolicy::new();
+    let mut decrypted_data = Cursor::new(Vec::new());
+    decrypt(&policy, &mut decrypted_data, &encrypted_bytes, &cert).map_err(|e| e.to_string())?;
 
+    let decrypted_data = decrypted_data.into_inner();
     let decrypted_text = String::from_utf8(decrypted_data).map_err(|e| e.to_string())?;
 
     Ok(JsValue::from_str(&decrypted_text))
