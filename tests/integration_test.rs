@@ -1,24 +1,30 @@
-
-// tests/integration_test.rs
-
 #[cfg(test)]
+use sequoia_openpgp as openpgp;
+use rust_openpgp_wasm::{generate_and_measure, encrypt_and_measure, decrypt_and_measure, generate};
 mod tests {
-    use rust_openpgp_wasm::{generate_openpgp_keypair, encrypt_data_for_js};
-    use wasm_bindgen::JsValue;
+    use super::*;
+    use openpgp::policy::StandardPolicy;
+    use std::io::Cursor;
 
     #[test]
-    fn test_generate_keypair_and_encrypt() {
-        let keypair_result = generate_openpgp_keypair();
-        assert!(keypair_result.is_ok());
+    fn benchmark_operations() -> openpgp::Result<()> {
+        let p = StandardPolicy::new();
 
-        let keypair = keypair_result.unwrap();
-        let public_key = keypair.as_object().unwrap().get("publicKey").unwrap().as_string().unwrap();
+        generate_and_measure()?;
 
-        let texts = vec!["test".to_string()];
-        let encryption_result = encrypt_data_for_js(JsValue::from_str(&public_key), texts);
-        assert!(encryption_result.is_ok());
+        let key = generate()?;
+        let mut ciphertext = Vec::new();
+        let mut cursor = Cursor::new(&mut ciphertext);
 
-        let encryption_data = encryption_result.unwrap();
-        println!("Encryption Data: {:?}", encryption_data);
+        encrypt_and_measure(&p, &mut cursor, "Hello, world!", &key)?;
+
+        let mut plaintext = Vec::new();
+        let mut cursor = Cursor::new(&mut plaintext);
+
+        decrypt_and_measure(&p, &mut cursor, &ciphertext, &key)?;
+
+        Ok(())
     }
 }
+
+

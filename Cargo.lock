@@ -1193,6 +1193,7 @@ dependencies = [
 name = "rust_openpgp_wasm"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.13.1",
  "console_error_panic_hook",
  "sequoia-openpgp",
