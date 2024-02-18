@@ -14,13 +14,9 @@ use base64::{encode, decode};
 use openpgp::policy::StandardPolicy;
 use std::io::Cursor;
 use anyhow::Result;
-use openpgp::serialize::SerializeInto;
+use openpgp::serialize::Serialize;
 
-#[wasm_bindgen(start)]
-pub fn start() -> Result<(), JsValue> {
-    console_error_panic_hook::set_once();
-    Ok(())
-}
+
 
 
 #[wasm_bindgen]
@@ -33,17 +29,16 @@ pub fn generate_openpgp_keypair() -> Result<JsValue, JsValue> {
 
     // Serialize the private key to an armored string.
     let mut armored_private_key = Vec::new();
-    cert.as_tsk().serialize_into(&mut armored_private_key)
+    cert.as_tsk().serialize(&mut armored_private_key)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
 
     // Serialize the public key to an armored string.
     let mut armored_public_key = Vec::new();
-    cert.serialize_into(&mut armored_public_key)
+    cert.serialize(&mut armored_public_key)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
 
     let base64_private_key = encode(&armored_private_key);
     let base64_public_key = encode(&armored_public_key);
-    
     // Convert the armored keys into `JsValue`.
     Ok(to_value(&serde_json::json!({
         "privateKey": base64_private_key,
