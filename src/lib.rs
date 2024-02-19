@@ -3,7 +3,7 @@ use sequoia_openpgp as openpgp;
 use wasm_bindgen::prelude::*;
 use openpgp::cert::prelude::*;
 use openpgp::crypto::SessionKey;
-use openpgp::types::SymmetricAlgorithm;
+use openpgp::types::{SymmetricAlgorithm, KeyFlags};
 use openpgp::serialize::stream::*;
 use openpgp::parse::{Parse, stream::*};
 use openpgp::policy::Policy;
@@ -18,15 +18,19 @@ use openpgp::serialize::Serialize;
 
 
 
-
 #[wasm_bindgen]
 pub fn generate_openpgp_keypair() -> Result<JsValue, JsValue> {
+    let cipher_suite = CipherSuite::Cv25519; // Specify ECC cipher suite here
     let (cert, _revocation) = CertBuilder::new()
         .add_userid("someone@example.org")
-        .add_transport_encryption_subkey()
+        .set_cipher_suite(cipher_suite) // Sets the cipher suite for the primary key
+        .add_subkey(
+            KeyFlags::empty().set_transport_encryption().set_storage_encryption(),
+            None,
+            None // This argument specifies the key's validity period. `None` means no expiration.
+        )
         .generate()
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
-
     // Serialize the private key to an armored string.
     let mut armored_private_key = Vec::new();
     cert.as_tsk().serialize(&mut armored_private_key)
@@ -59,6 +63,26 @@ pub fn encrypt_message(public_key_b64: &str, plaintext: &str) -> Result<JsValue,
     Ok(JsValue::from_str(&encrypted_b64))
 }
 
+#[wasm_bindgen]
+pub fn encrypt_messages(public_key_b64: &str, plaintexts: Vec<String>) -> Result<JsValue, JsValue> {
+    let public_key_bytes = decode(public_key_b64).map_err(|e| e.to_string())?;
+    let cert = Cert::from_bytes(&public_key_bytes).map_err(|e| e.to_string())?;
+    let policy = StandardPolicy::new();
+
+    let mut encrypted_texts = Vec::new();
+
+    for plaintext in plaintexts.iter() {
+        let mut encrypted_data = Vec::new();
+        encrypt(&policy, &mut encrypted_data, plaintext, &cert)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        let encrypted_b64 = encode(&encrypted_data);
+        encrypted_texts.push(encrypted_b64);
+    }
+
+    to_value(&encrypted_texts).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 
 #[wasm_bindgen]
 pub fn decrypt_message(private_key_b64: &str, encrypted_b64: &str) -> Result<JsValue, JsValue> {
@@ -76,10 +100,31 @@ pub fn decrypt_message(private_key_b64: &str, encrypted_b64: &str) -> Result<JsV
     Ok(JsValue::from_str(&decrypted_text))
 }
 
+#[wasm_bindgen]
+pub fn decrypt_messages(private_key_b64: &str, encrypted_texts: Vec<String>) -> Result<JsValue, JsValue> {
+    let private_key_bytes = decode(private_key_b64).map_err(|e| e.to_string())?;
+    let cert = Cert::from_bytes(&private_key_bytes).map_err(|e| e.to_string())?;
+    let policy = StandardPolicy::new();
+
+    let mut decrypted_texts = Vec::new();
+
+    for encrypted_b64 in encrypted_texts.iter() {
+        let encrypted_bytes = decode(encrypted_b64).map_err(|e| e.to_string())?;
+        let mut decrypted_data = Cursor::new(Vec::new());
+        decrypt(&policy, &mut decrypted_data, &encrypted_bytes, &cert).map_err(|e| e.to_string())?;
+
+        let decrypted_data = decrypted_data.into_inner();
+        let decrypted_text = String::from_utf8(decrypted_data).map_err(|e| e.to_string())?;
+        decrypted_texts.push(decrypted_text);
+    }
+
+    to_value(&decrypted_texts).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 /// Generates an encryption-capable key and measures the time taken.
 pub fn generate_and_measure() -> openpgp::Result<()> {
     let start = Instant::now();
-    let cert = generate()?;
+    let _cert = generate()?;
     let duration = start.elapsed();
 
     println!("Key generation took: {:?}", duration);
