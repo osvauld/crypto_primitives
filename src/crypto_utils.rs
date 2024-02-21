@@ -1,12 +1,18 @@
 // lib.rs
 use sequoia_openpgp as openpgp;
-use openpgp::types::{SymmetricAlgorithm, KeyFlags,};
+use openpgp::types:: KeyFlags;
 use openpgp::serialize::stream::*;
 use openpgp::parse::{Parse, stream::*};
 use openpgp::policy::Policy;
-use openpgp::crypto::{Password, SessionKey, S2K, random };
+use openpgp::crypto::Password;
 use openpgp::cert::{CertBuilder, CipherSuite};
-use std::io::{self, Write};
+use std::io:: Write;
+use openpgp::parse::stream::MessageStructure;
+use openpgp::crypto::KeyPair;
+use openpgp::packet::Key;
+use std::io::Cursor;
+
+
 /// Encrypts the given message.
 pub fn encrypt(p: &dyn Policy, sink: &mut (dyn Write + Send + Sync),
                plaintext: &str, recipient: &openpgp::Cert)
@@ -35,66 +41,6 @@ pub fn encrypt(p: &dyn Policy, sink: &mut (dyn Write + Send + Sync),
     Ok(())
 }
 
-/// Decrypts the given message.
-pub fn decrypt(p: &dyn Policy,
-               sink: &mut dyn Write, ciphertext: &[u8], recipient: &openpgp::Cert)
-    -> openpgp::Result<()> {
-    // Make a helper that feeds the recipient's secret key to the
-    // decryptor.
-    let helper = Helper {
-        secret: recipient,
-        policy: p,
-    };
-
-    // Now, create a decryptor with a helper using the given Certs.
-    let mut decryptor = DecryptorBuilder::from_bytes(ciphertext)?
-        .with_policy(p, None, helper)?;
-
-    // Decrypt the data.
-    io::copy(&mut decryptor, sink)?;
-
-    Ok(())
-}
-
-struct Helper<'a> {
-    secret: &'a openpgp::Cert,
-    policy: &'a dyn Policy,
-}
-
-impl<'a> VerificationHelper for Helper<'a> {
-    fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
-                       -> openpgp::Result<Vec<openpgp::Cert>> {
-        Ok(Vec::new())
-    }
-
-    fn check(&mut self, _structure: MessageStructure)
-             -> openpgp::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> DecryptionHelper for Helper<'a> {
-    fn decrypt<D>(&mut self,
-                  pkesks: &[openpgp::packet::PKESK],
-                  _skesks: &[openpgp::packet::SKESK],
-                  sym_algo: Option<SymmetricAlgorithm>,
-                  mut decrypt: D)
-                  -> openpgp::Result<Option<openpgp::Fingerprint>>
-        where D: FnMut(SymmetricAlgorithm, &SessionKey) -> bool {
-        let key = self.secret.keys().unencrypted_secret()
-            .with_policy(self.policy, None)
-            .for_storage_encryption().next().unwrap().key().clone();
-
-        // The secret key is not encrypted.
-        let mut pair = key.into_keypair()?;
-
-        pkesks[0].decrypt(&mut pair, sym_algo)
-            .map(|(algo, session_key)| decrypt(algo, &session_key));
-
-        Ok(None)
-    }
-}
-
 pub fn generate_cert_for_usage(flags: KeyFlags, password: &str) -> openpgp::Result<openpgp::Cert> {
     let passphrase = Password::from(password);
 
@@ -108,3 +54,64 @@ pub fn generate_cert_for_usage(flags: KeyFlags, password: &str) -> openpgp::Resu
 }
 
 
+impl<'a> VerificationHelper for Helper<'a> {
+    fn get_certs(&mut self, _ids: &[openpgp::KeyHandle])
+                       -> openpgp::Result<Vec<openpgp::Cert>> {
+        Ok(Vec::new())
+    }
+
+    fn check(&mut self, _structure: MessageStructure)
+             -> openpgp::Result<()> {
+        Ok(())
+    }
+}
+
+
+
+
+
+
+
+pub fn decrypt_message(p: &dyn Policy, sk: &Key<openpgp::packet::key::SecretParts, openpgp::packet::key::UnspecifiedRole>, ciphertext: &[u8]) -> openpgp::Result<Vec<u8>> {
+    let helper = Helper {
+        secret: &sk,
+        policy: p,
+    };
+
+    // Parse the message and create a decryptor with the helper.
+    let mut decryptor = DecryptorBuilder::from_bytes( ciphertext)?
+        .with_policy(p, None, helper)?;
+
+    // Read the decrypted data
+    let mut plaintext = Cursor::new(Vec::new());
+
+    // Copy the decrypted data to the plaintext Vec<u8>
+    std::io::copy(&mut decryptor, &mut plaintext)?;
+    
+    // Get the plaintext Vec<u8> from the Cursor
+    let plaintext = plaintext.into_inner();
+    Ok(plaintext)
+}
+
+struct Helper<'a> {
+    secret: &'a Key<openpgp::packet::key::SecretParts, openpgp::packet::key::UnspecifiedRole>,
+    policy: &'a dyn Policy,
+}
+
+impl<'a> openpgp::parse::stream::DecryptionHelper for Helper<'a> {
+    fn decrypt<D>(&mut self,
+                  pkesks: &[openpgp::packet::PKESK],
+                  _skesks: &[openpgp::packet::SKESK],
+                  sym_algo: Option<openpgp::types::SymmetricAlgorithm>,
+                  mut decrypt: D)
+                  -> openpgp::Result<Option<openpgp::Fingerprint>>
+        where D: FnMut(openpgp::types::SymmetricAlgorithm, &openpgp::crypto::SessionKey) -> bool {
+        // The secret key is already decrypted.
+        let mut pair = KeyPair::from(self.secret.clone().into_keypair()?);
+
+        pkesks[0].decrypt(&mut pair, sym_algo)
+            .map(|(algo, session_key)| decrypt(algo, &session_key));
+
+        Ok(None)
+    }
+}

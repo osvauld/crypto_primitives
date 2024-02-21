@@ -6,15 +6,13 @@ use crypto_utils::*;
 use wasm_bindgen::prelude::*;
 use serde_wasm_bindgen::to_value;
 use base64::{encode, decode};
-use std::io::Cursor;
 use anyhow::Result ;
 use openpgp::serialize::Serialize;
 use openpgp::cert::prelude::*;
 use openpgp::parse::Parse ;
 use openpgp::policy::StandardPolicy;
 use openpgp::types::KeyFlags;
-
-
+use openpgp::crypto::Password;
 
 
 
@@ -75,22 +73,30 @@ pub fn encrypt_messages(public_key_b64: &str, plaintexts: Vec<String>) -> Result
 
 
 
+
 #[wasm_bindgen]
-pub fn decrypt_messages(private_key_b64: &str, encrypted_texts: Vec<String>) -> Result<JsValue, JsValue> {
+pub fn decrypt_messages(private_key_b64: &str, encrypted_texts: Vec<String>, password: &str) -> Result<JsValue, JsValue> {
     let private_key_bytes = decode(private_key_b64).map_err(|e| e.to_string())?;
     let cert = Cert::from_bytes(&private_key_bytes).map_err(|e| e.to_string())?;
-    let policy = StandardPolicy::new();
+    let p = &StandardPolicy::new();
+    // Get the secret key from the certificate
+    let keypair = cert.keys().with_policy(p, None).secret().for_storage_encryption().nth(0)
+        .ok_or_else(|| JsValue::from_str("No suitable key found in Cert."))?
+        .key().clone();
 
+    // Convert the password to a SessionKey
+    let password = Password::from(password);
+
+    // Decrypt the secret key with the password
+    let sk = keypair.decrypt_secret(&password)
+        .map_err(|_| JsValue::from_str("Failed to decrypt secret key with password."))?;
     let mut decrypted_texts = Vec::new();
 
     for encrypted_b64 in encrypted_texts.iter() {
         let encrypted_bytes = decode(encrypted_b64).map_err(|e| e.to_string())?;
-        let mut decrypted_data = Cursor::new(Vec::new());
-        decrypt(&policy, &mut decrypted_data, &encrypted_bytes, &cert).map_err(|e| e.to_string())?;
 
-        let decrypted_data = decrypted_data.into_inner();
-        let decrypted_text = String::from_utf8(decrypted_data).map_err(|e| e.to_string())?;
-        decrypted_texts.push(decrypted_text);
+        let plain_text = decrypt_message(p, &sk, &encrypted_bytes).map_err(|e| e.to_string())?;
+        decrypted_texts.push(plain_text);
     }
 
     to_value(&decrypted_texts).map_err(|e| JsValue::from_str(&e.to_string()))
