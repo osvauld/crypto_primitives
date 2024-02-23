@@ -1,39 +1,54 @@
 // lib.rs
 mod crypto_utils;
 
-use sequoia_openpgp as openpgp;
+use anyhow::Result;
+use base64::{decode, encode};
 use crypto_utils::*;
-use wasm_bindgen::prelude::*;
-use serde_wasm_bindgen::to_value;
-use base64::{encode, decode};
-use anyhow::Result ;
-use openpgp::serialize::Serialize;
 use openpgp::cert::prelude::*;
-use openpgp::parse::Parse ;
-use openpgp::policy::StandardPolicy;
-use openpgp::types::KeyFlags;
 use openpgp::crypto::Password;
+use openpgp::parse::Parse;
+use openpgp::policy::StandardPolicy;
 
-
-
+use openpgp::armor::Writer;
+use openpgp::serialize::stream::{Message, Signer};
+use openpgp::serialize::Serialize;
+use openpgp::types::KeyFlags;
+use sequoia_openpgp as openpgp;
+use serde_wasm_bindgen::to_value;
+use std::io::Write;
+use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub fn generate_and_encrypt_keys(password: &str) -> Result<JsValue, JsValue> {
     // Example for generating an encryption certificate. Adjust as needed.
-    let enc_cert = generate_cert_for_usage(KeyFlags::empty().set_storage_encryption(), password).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let sign_cert = generate_cert_for_usage(KeyFlags::empty().set_signing(), password).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let enc_cert = generate_cert_for_usage(KeyFlags::empty().set_storage_encryption(), password)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let sign_cert = generate_cert_for_usage(KeyFlags::empty().set_signing(), password)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     // Serialize and encrypt the private keys using the password
     let mut enc_private_key = Vec::new();
-    enc_cert.as_tsk().serialize(&mut enc_private_key).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    enc_cert
+        .as_tsk()
+        .serialize(&mut enc_private_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
     let mut sign_private_key = Vec::new();
-    sign_cert.as_tsk().serialize(&mut sign_private_key).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    sign_cert
+        .as_tsk()
+        .serialize(&mut sign_private_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    // Serialize the public keys
 
     // Serialize the public keys
     let mut enc_public_key = Vec::new();
-    enc_cert.serialize(&mut enc_public_key).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    enc_cert
+        .armored()
+        .serialize(&mut enc_public_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
     let mut sign_public_key = Vec::new();
-    sign_cert.serialize(&mut sign_public_key).map_err(|err| JsValue::from_str(&err.to_string()))?;
-
+    sign_cert
+        .armored()
+        .serialize(&mut sign_public_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
     // Convert the keys into base64 strings
     let base64_enc_private_key = encode(&enc_private_key);
     let base64_sign_private_key = encode(&sign_private_key);
@@ -46,9 +61,9 @@ pub fn generate_and_encrypt_keys(password: &str) -> Result<JsValue, JsValue> {
         "sign_private_key": base64_sign_private_key,
         "enc_public_key": base64_enc_public_key,
         "sign_public_key": base64_sign_public_key,
-    })).map_err(|err| JsValue::from_str(&err.to_string()))?)
+    }))
+    .map_err(|err| JsValue::from_str(&err.to_string()))?)
 }
-
 
 #[wasm_bindgen]
 pub fn encrypt_messages(public_key_b64: &str, plaintexts: Vec<String>) -> Result<JsValue, JsValue> {
@@ -70,25 +85,32 @@ pub fn encrypt_messages(public_key_b64: &str, plaintexts: Vec<String>) -> Result
     to_value(&encrypted_texts).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
-
-
-
-
 #[wasm_bindgen]
-pub fn decrypt_messages(private_key_b64: &str, encrypted_texts: Vec<String>, password: &str) -> Result<JsValue, JsValue> {
+pub fn decrypt_messages(
+    private_key_b64: &str,
+    encrypted_texts: Vec<String>,
+    password: &str,
+) -> Result<JsValue, JsValue> {
     let private_key_bytes = decode(private_key_b64).map_err(|e| e.to_string())?;
     let cert = Cert::from_bytes(&private_key_bytes).map_err(|e| e.to_string())?;
     let p = &StandardPolicy::new();
     // Get the secret key from the certificate
-    let keypair = cert.keys().with_policy(p, None).secret().for_storage_encryption().nth(0)
+    let keypair = cert
+        .keys()
+        .with_policy(p, None)
+        .secret()
+        .for_storage_encryption()
+        .nth(0)
         .ok_or_else(|| JsValue::from_str("No suitable key found in Cert."))?
-        .key().clone();
+        .key()
+        .clone();
 
     // Convert the password to a SessionKey
     let password = Password::from(password);
 
     // Decrypt the secret key with the password
-    let sk = keypair.decrypt_secret(&password)
+    let sk = keypair
+        .decrypt_secret(&password)
         .map_err(|_| JsValue::from_str("Failed to decrypt secret key with password."))?;
     let mut decrypted_texts = Vec::new();
 
@@ -102,14 +124,66 @@ pub fn decrypt_messages(private_key_b64: &str, encrypted_texts: Vec<String>, pas
     to_value(&decrypted_texts).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
-/// Generates an encryption-capable key.
-pub fn generate() -> openpgp::Result<openpgp::Cert> {
-    let (cert, _revocation) = CertBuilder::new()
-        .add_userid("someone@example.org")
-        .add_transport_encryption_subkey()
-        .generate()?;
+#[wasm_bindgen]
+pub fn sign_message(encoded_key: &str, password: &str, message: &str) -> Result<JsValue, JsValue> {
+    // Decoding the key
+    let private_key_bytes = decode(encoded_key).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let cert =
+        Cert::from_bytes(&private_key_bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let policy = &StandardPolicy::new();
 
-    // Save the revocation certificate somewhere.
+    // Finding a signing-capable key
+    let key = cert
+        .keys()
+        .with_policy(policy, None)
+        .secret()
+        .for_signing()
+        .nth(0)
+        .ok_or_else(|| JsValue::from_str("No suitable key found in Cert."))?
+        .key()
+        .clone();
 
-    Ok(cert)
+    // Decrypting the secret key with the provided password
+    let password = Password::from(password);
+    let decrypted_key = key
+        .decrypt_secret(&password)
+        .map_err(|_| JsValue::from_str("Failed to decrypt secret key with password."))?;
+
+    // Preparing for the signing operation
+    let mut signed_message = Vec::new();
+    let message_writer = Message::new(&mut signed_message);
+
+    // Initializing the signer
+    let keypair = decrypted_key
+        .into_keypair()
+        .map_err(|_| JsValue::from_str("Failed to convert secret key into keypair."))?;
+    let mut signer = Signer::new(message_writer, keypair)
+        .detached() // This should correctly initialize a detached signer, if .detached() is a valid builder method
+        .build()
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    // Signing the message
+    signer
+        .write_all(message.as_bytes())
+        .map_err(|_| JsValue::from_str("Failed to write message to signer."))?;
+    signer
+        .finalize()
+        .map_err(|_| JsValue::from_str("Failed to finalize signer."))?;
+
+    // Armoring the signature
+    let mut armored_signature = Vec::new();
+    let mut armor_writer =
+        openpgp::armor::Writer::new(&mut armored_signature, openpgp::armor::Kind::Signature)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    armor_writer
+        .write_all(&signed_message)
+        .map_err(|_| JsValue::from_str("Failed to write signature."))?;
+    armor_writer
+        .finalize()
+        .map_err(|_| JsValue::from_str("Failed to finalize armored writer."))?;
+
+    // Encoding the armored signature in base64
+    let base64_encoded_signature = base64::encode(armored_signature);
+
+    Ok(JsValue::from_str(&base64_encoded_signature))
 }
