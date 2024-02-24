@@ -4,19 +4,34 @@ mod crypto_utils;
 use anyhow::Result;
 use base64::{decode, encode};
 use crypto_utils::*;
+use lazy_static::lazy_static;
 use openpgp::cert::prelude::*;
 use openpgp::crypto::Password;
+use openpgp::packet::key::SecretParts;
+use openpgp::packet::key::UnspecifiedRole;
+use openpgp::packet::Key;
 use openpgp::parse::Parse;
 use openpgp::policy::StandardPolicy;
-
-use openpgp::armor::Writer;
 use openpgp::serialize::stream::{Message, Signer};
 use openpgp::serialize::Serialize;
 use openpgp::types::KeyFlags;
 use sequoia_openpgp as openpgp;
+
 use serde_wasm_bindgen::to_value;
 use std::io::Write;
+
+use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
+
+lazy_static! {
+    static ref GLOBAL_CONTEXT: Mutex<
+        Option<(
+            Key<SecretParts, UnspecifiedRole>,
+            Key<SecretParts, UnspecifiedRole>
+        )>,
+    > = Mutex::new(None);
+}
+
 #[wasm_bindgen]
 pub fn generate_and_encrypt_keys(password: &str) -> Result<JsValue, JsValue> {
     // Example for generating an encryption certificate. Adjust as needed.
@@ -186,4 +201,86 @@ pub fn sign_message(encoded_key: &str, password: &str, message: &str) -> Result<
     let base64_encoded_signature = base64::encode(armored_signature);
 
     Ok(JsValue::from_str(&base64_encoded_signature))
+}
+
+#[wasm_bindgen]
+pub fn decrypt_and_store_keys(
+    enc_private_key_b64: &str,
+    sign_private_key_b64: &str,
+    password: &str,
+) -> Result<(), JsValue> {
+    // Decrypt the encryption private key
+    let enc_keypair = decrypt_private_key(enc_private_key_b64, password, false)
+        .map_err(|_| JsValue::from_str("Failed to decrypt encryption private key."))?;
+
+    // Decrypt the signing private key
+    let sign_keypair = decrypt_private_key(sign_private_key_b64, password, true)
+        .map_err(|_| JsValue::from_str("Failed to decrypt signing private key."))?;
+
+    // Store the decrypted keys in the global context
+
+    // Store the decrypted keys in the global context
+    let mut context = GLOBAL_CONTEXT
+        .lock()
+        .map_err(|_| JsValue::from_str("Failed to lock global context."))?;
+    *context = Some((enc_keypair.clone(), sign_keypair.clone()));
+    Ok(())
+}
+
+#[wasm_bindgen]
+pub fn sign_message_with_stored_key(message: &str) -> Result<JsValue, JsValue> {
+    // Access the global context to retrieve the stored sign_keypair
+    let context = GLOBAL_CONTEXT
+        .lock()
+        .map_err(|_| JsValue::from_str("Failed to lock global context."))?;
+    let sign_keypair = context
+        .as_ref()
+        .ok_or_else(|| JsValue::from_str("No keys stored in context."))?
+        .1
+        .clone();
+
+    // Convert the stored keypair into a form suitable for signing
+    let keypair = sign_keypair
+        .into_keypair()
+        .map_err(|_| JsValue::from_str("Failed to convert secret key into keypair."))?;
+
+    // Prepare for the signing operation
+    let mut signed_message = Vec::new();
+    let message_writer = Message::new(&mut signed_message);
+
+    // Initialize the signer
+    let mut signer = Signer::new(message_writer, keypair)
+        .detached() // Assuming detached signature
+        .build()
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    // Sign the message
+    signer
+        .write_all(message.as_bytes())
+        .map_err(|_| JsValue::from_str("Failed to write message to signer."))?;
+    signer
+        .finalize()
+        .map_err(|_| JsValue::from_str("Failed to finalize signer."))?;
+
+    // Armoring the signature
+    let mut armored_signature = Vec::new();
+    let mut armor_writer =
+        openpgp::armor::Writer::new(&mut armored_signature, openpgp::armor::Kind::Signature)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    armor_writer
+        .write_all(&signed_message)
+        .map_err(|_| JsValue::from_str("Failed to write signature."))?;
+    armor_writer
+        .finalize()
+        .map_err(|_| JsValue::from_str("Failed to finalize armored writer."))?;
+
+    // Encoding the armored signature in base64
+    let base64_encoded_signature = base64::encode(armored_signature);
+
+    Ok(JsValue::from_str(&base64_encoded_signature))
+}
+
+#[wasm_bindgen]
+pub fn is_global_context_set() -> bool {
+    GLOBAL_CONTEXT.lock().unwrap().is_some()
 }

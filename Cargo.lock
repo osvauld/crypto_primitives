@@ -1196,6 +1196,7 @@ dependencies = [
  "anyhow",
  "base64 0.13.1",
  "console_error_panic_hook",
+ "lazy_static",
  "sequoia-openpgp",
  "serde",
  "serde-wasm-bindgen",

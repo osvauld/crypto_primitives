@@ -1,17 +1,23 @@
 // lib.rs
+use base64::decode;
 use openpgp::cert::{CertBuilder, CipherSuite};
 use openpgp::crypto::KeyPair;
 use openpgp::crypto::Password;
+use openpgp::packet::key::KeyRole;
+use openpgp::packet::key::SecretParts;
+use openpgp::packet::key::UnspecifiedRole;
 use openpgp::packet::Key;
 use openpgp::parse::stream::MessageStructure;
 use openpgp::parse::{stream::*, Parse};
 use openpgp::policy::Policy;
+use openpgp::policy::StandardPolicy;
 use openpgp::serialize::stream::*;
 use openpgp::types::KeyFlags;
+use openpgp::Cert;
 use sequoia_openpgp as openpgp;
+use std::error::Error;
 use std::io::Cursor;
 use std::io::Write;
-
 /// Encrypts the given message.
 pub fn encrypt(
     p: &dyn Policy,
@@ -118,3 +124,72 @@ impl<'a> openpgp::parse::stream::DecryptionHelper for Helper<'a> {
         Ok(None)
     }
 }
+
+pub fn decrypt_private_key(
+    private_key_b64: &str,
+    password: &str,
+    for_signing: bool,
+) -> Result<
+    Key<openpgp::packet::key::SecretParts, openpgp::packet::key::UnspecifiedRole>,
+    Box<dyn Error>,
+> {
+    let private_key_bytes = decode(private_key_b64)?;
+    let cert = Cert::from_bytes(&private_key_bytes)?;
+    let p = &StandardPolicy::new();
+
+    // Get the secret key from the certificate
+    let keypair = if for_signing {
+        cert.keys()
+            .with_policy(p, None)
+            .secret()
+            .for_signing()
+            .nth(0)
+            .ok_or_else(|| "No suitable key found in Cert.")?
+            .key()
+            .clone()
+    } else {
+        cert.keys()
+            .with_policy(p, None)
+            .secret()
+            .for_storage_encryption()
+            .nth(0)
+            .ok_or_else(|| "No suitable key found in Cert.")?
+            .key()
+            .clone()
+    };
+
+    // Convert the password to a SessionKey
+    let password = Password::from(password);
+
+    // Decrypt the secret key with the password
+    let decrypted_keypair = keypair.decrypt_secret(&password)?;
+
+    // The keypair now contains the decrypted secret key
+    // You can use it to perform cryptographic operations
+
+    Ok(decrypted_keypair)
+}
+
+// extractPUb{
+
+//     let mut armor_writer =
+//         openpgp::armor::Writer::new(&mut output, openpgp::armor::Kind::PublicKey)
+//             .map_err(|_| JsValue::from_str("Failed to decrypt signing private key."))?;
+//     sequoia_openpgp::serialize::Marshal::serialize(public_key, &mut armor_writer)
+//         .map_err(|_| JsValue::from_str("Failed to serialize public key."))?;
+
+//     armor_writer
+//         .finalize()
+//         .map_err(|_| JsValue::from_str("Failed to decrypt signing private key."))?;
+//     let armored_str = String::from_utf8(output)
+//         .map_err(|_| JsValue::from_str("Failed to convert armored data to string."))?;
+
+//     // Encode the armored string into a base64 string
+//     let base64_armored_str = base64::encode(&armored_str);
+
+//     // Return the base64-encoded armored public key
+//     Ok(to_value(&serde_json::json!({
+//         "public_key": base64_armored_str,
+//     }))
+//     .map_err(|err| JsValue::from_str(&err.to_string()))?)
+// }
