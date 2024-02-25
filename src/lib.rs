@@ -4,6 +4,7 @@ mod crypto_utils;
 use anyhow::Result;
 use base64::{decode, encode};
 use crypto_utils::*;
+use js_sys::Array;
 use lazy_static::lazy_static;
 use openpgp::cert::prelude::*;
 use openpgp::crypto::Password;
@@ -13,15 +14,15 @@ use openpgp::packet::Key;
 use openpgp::parse::Parse;
 use openpgp::policy::StandardPolicy;
 use openpgp::serialize::stream::{Message, Signer};
-use openpgp::serialize::Serialize;
+use openpgp::serialize::Serialize as openpgp_Serialize;
 use openpgp::types::KeyFlags;
 use sequoia_openpgp as openpgp;
-
-use serde_wasm_bindgen::to_value;
+use serde::{Deserialize, Serialize};
+use serde_wasm_bindgen::{from_value, to_value};
 use std::io::Write;
-
 use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
+use web_sys::console;
 
 lazy_static! {
     static ref GLOBAL_CONTEXT: Mutex<
@@ -283,4 +284,72 @@ pub fn sign_message_with_stored_key(message: &str) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub fn is_global_context_set() -> bool {
     GLOBAL_CONTEXT.lock().unwrap().is_some()
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicKey {
+    id: String,
+    public_key: String,
+    name: String,
+    username: String,
+    access_type: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Field {
+    field_name: Option<String>,
+    field_value: String,
+    field_type: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedField {
+    user_id: String,
+    fields: Vec<Field>,
+}
+
+#[wasm_bindgen]
+pub fn encrypt_new_credential(public_keys: Array, fields: Array) -> Result<JsValue, JsValue> {
+    let mut encrypted_fields = Vec::new();
+    let policy = StandardPolicy::new();
+
+    for public_key in public_keys.iter() {
+        console::log_1(&JsValue::from_str(&format!("public_key: {:?}", public_key)));
+        let public_key_struct: PublicKey = from_value(public_key.clone())
+            .map_err(|_| JsValue::from_str("Failed to deserialize public key"))?;
+
+        let public_key_decoded = base64::decode(&public_key_struct.public_key)
+            .map_err(|_| JsValue::from_str("Failed to decode public key"))?;
+
+        let public_key_openpgp = Cert::from_bytes(&public_key_decoded)
+            .map_err(|_| JsValue::from_str("Failed to parse public key"))?;
+
+        let mut fields_for_user = Vec::new();
+
+        for field in fields.iter() {
+            console::log_1(&JsValue::from_str(&format!("Field: {:?}", field)));
+            let mut sink = Vec::new();
+            let field: Field = from_value(field.clone())
+                .map_err(|_| JsValue::from_str("Failed to deserialize field"))?;
+
+            // Encrypt the field value
+            encrypt(&policy, &mut sink, &field.field_value, &public_key_openpgp)
+                .map_err(|_| JsValue::from_str("Failed to encrypt field value"))?;
+
+            fields_for_user.push(Field {
+                field_name: field.field_name,
+                field_value: encode(sink),
+                field_type: field.field_type,
+            });
+        }
+
+        encrypted_fields.push(EncryptedField {
+            user_id: public_key_struct.id,
+            fields: fields_for_user,
+        });
+    }
+
+    Ok(serde_wasm_bindgen::to_value(&encrypted_fields)?)
 }
