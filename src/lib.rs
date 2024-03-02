@@ -460,3 +460,90 @@ pub fn decrypt_text(encrypted_text: String) -> Result<JsValue, JsValue> {
 
     Ok(JsValue::from_str(&decrypted_text))
 }
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BasicFields {
+    field_id: String,
+    field_value: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialFields {
+    credential_id: String,
+    fields: Vec<BasicFields>,
+}
+
+#[wasm_bindgen]
+pub fn decrypt_fields(credentials: JsValue) -> Result<JsValue, JsValue> {
+    let credentials: Vec<CredentialFields> = serde_wasm_bindgen::from_value(credentials)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    let context = GLOBAL_CONTEXT
+        .lock()
+        .map_err(|_| JsValue::from_str("Failed to lock global context."))?;
+
+    let (enc_keypair, _) = context
+        .as_ref()
+        .ok_or(JsValue::from_str("Keys are not loaded in the context."))?;
+
+    let policy = StandardPolicy::new();
+
+    let mut decrypted_credentials = Vec::new();
+
+    for credential in credentials {
+        let mut decrypted_fields = Vec::new();
+
+        for field in credential.fields {
+            let encrypted_bytes =
+                decode(&field.field_value).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let decrypted_bytes = decrypt_message(&policy, &enc_keypair, &encrypted_bytes)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let decrypted_text = String::from_utf8(decrypted_bytes)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+            decrypted_fields.push(BasicFields {
+                field_id: field.field_id,
+                field_value: decrypted_text,
+            });
+        }
+
+        decrypted_credentials.push(CredentialFields {
+            credential_id: credential.credential_id,
+            fields: decrypted_fields,
+        });
+    }
+
+    serde_wasm_bindgen::to_value(&decrypted_credentials)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn encrypt_fields(fields: Array, public_key: String) -> Result<JsValue, JsValue> {
+    let policy = StandardPolicy::new();
+
+    let public_key_decoded = base64::decode(&public_key)
+        .map_err(|_| JsValue::from_str("Failed to decode public key"))?;
+
+    let public_key_openpgp = Cert::from_bytes(&public_key_decoded)
+        .map_err(|_| JsValue::from_str("Failed to parse public key"))?;
+
+    let mut encrypted_fields = Vec::new();
+
+    for field in fields {
+        let field: BasicFields = from_value(field.clone())
+            .map_err(|_| JsValue::from_str("Failed to deserialize field"))?;
+        console::log_1(&JsValue::from_str(&format!("Field: {:?}", field)));
+        let mut sink = Vec::new();
+        encrypt(&policy, &mut sink, &field.field_value, &public_key_openpgp)
+            .map_err(|_| JsValue::from_str("Failed to encrypt field value"))?;
+        let encrypted_text = encode(&sink);
+
+        encrypted_fields.push(BasicFields {
+            field_id: field.field_id,
+            field_value: encrypted_text,
+        });
+    }
+
+    serde_wasm_bindgen::to_value(&encrypted_fields).map_err(|e| JsValue::from_str(&e.to_string()))
+}
