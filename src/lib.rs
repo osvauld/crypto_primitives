@@ -357,7 +357,7 @@ pub fn encrypt_new_credential(public_keys: Array, fields: Array) -> Result<JsVal
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaField {
-    id: String,
+    field_id: String,
     field_name: Option<String>,
     field_value: String,
     field_type: Option<String>,
@@ -414,7 +414,7 @@ pub fn decrypt_credentials(credentials: Array) -> Result<JsValue, JsValue> {
             let decrypted_text = String::from_utf8(decrypted_bytes).map_err(|e| e.to_string())?;
 
             decrypted_fields.push(MetaField {
-                id: field.id.clone(),
+                field_id: field.field_id.clone(),
                 field_name: field.field_name.clone(),
                 field_value: decrypted_text,
                 field_type: field.field_type.clone(),
