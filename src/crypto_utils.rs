@@ -1,20 +1,31 @@
 // lib.rs
-use base64::decode;
+
+use base64::{decode, encode};
+use openpgp::armor::Reader;
+use openpgp::armor::ReaderMode;
+use openpgp::armor::{Kind, Writer};
+use openpgp::cert::CertParser;
 use openpgp::cert::{CertBuilder, CipherSuite};
 use openpgp::crypto::KeyPair;
 use openpgp::crypto::Password;
+use openpgp::crypto::SessionKey;
 use openpgp::packet::Key;
 use openpgp::parse::stream::MessageStructure;
+use openpgp::parse::PacketParser;
 use openpgp::parse::{stream::*, Parse};
 use openpgp::policy::Policy;
 use openpgp::policy::StandardPolicy;
 use openpgp::serialize::stream::*;
+use openpgp::serialize::Marshal;
 use openpgp::types::KeyFlags;
 use openpgp::Cert;
 use sequoia_openpgp as openpgp;
 use std::error::Error;
 use std::io::Cursor;
 use std::io::Write;
+use wasm_bindgen::JsValue;
+use web_sys::console;
+
 /// Encrypts the given message.
 pub fn encrypt(
     p: &dyn Policy,
@@ -167,26 +178,14 @@ pub fn decrypt_private_key(
     Ok(decrypted_keypair)
 }
 
-// extractPUb{
+pub fn get_pub_key_str(private_key_b64: &str) -> Result<String, Box<dyn Error>> {
+    let private_key_bytes = decode(private_key_b64)?;
 
-//     let mut armor_writer =
-//         openpgp::armor::Writer::new(&mut output, openpgp::armor::Kind::PublicKey)
-//             .map_err(|_| JsValue::from_str("Failed to decrypt signing private key."))?;
-//     sequoia_openpgp::serialize::Marshal::serialize(public_key, &mut armor_writer)
-//         .map_err(|_| JsValue::from_str("Failed to serialize public key."))?;
+    let cert = Cert::from_bytes(&private_key_bytes)?;
 
-//     armor_writer
-//         .finalize()
-//         .map_err(|_| JsValue::from_str("Failed to decrypt signing private key."))?;
-//     let armored_str = String::from_utf8(output)
-//         .map_err(|_| JsValue::from_str("Failed to convert armored data to string."))?;
-
-//     // Encode the armored string into a base64 string
-//     let base64_armored_str = base64::encode(&armored_str);
-
-//     // Return the base64-encoded armored public key
-//     Ok(to_value(&serde_json::json!({
-//         "public_key": base64_armored_str,
-//     }))
-//     .map_err(|err| JsValue::from_str(&err.to_string()))?)
-// }
+    let mut enc_public_key = Vec::new();
+    cert.armored().serialize(&mut enc_public_key)?;
+    // Get the primary key from the certificate
+    let base64_enc_public_key = encode(&enc_public_key);
+    Ok(base64_enc_public_key)
+}

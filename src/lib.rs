@@ -6,6 +6,7 @@ use base64::{decode, encode};
 use crypto_utils::*;
 use js_sys::Array;
 use lazy_static::lazy_static;
+use openpgp::armor;
 use openpgp::cert::prelude::*;
 use openpgp::crypto::Password;
 use openpgp::packet::key::SecretParts;
@@ -18,6 +19,7 @@ use openpgp::serialize::Serialize as openpgp_Serialize;
 use openpgp::types::KeyFlags;
 use sequoia_openpgp as openpgp;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use serde_wasm_bindgen::{from_value, to_value};
 use std::io::Write;
 use std::sync::Mutex;
@@ -79,65 +81,6 @@ pub fn generate_and_encrypt_keys(password: &str) -> Result<JsValue, JsValue> {
         "sign_public_key": base64_sign_public_key,
     }))
     .map_err(|err| JsValue::from_str(&err.to_string()))?)
-}
-
-#[wasm_bindgen]
-pub fn encrypt_messages(public_key_b64: &str, plaintexts: Vec<String>) -> Result<JsValue, JsValue> {
-    let public_key_bytes = decode(public_key_b64).map_err(|e| e.to_string())?;
-    let cert = Cert::from_bytes(&public_key_bytes).map_err(|e| e.to_string())?;
-    let policy = StandardPolicy::new();
-
-    let mut encrypted_texts = Vec::new();
-
-    for plaintext in plaintexts.iter() {
-        let mut encrypted_data = Vec::new();
-        encrypt(&policy, &mut encrypted_data, plaintext, &cert)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-        let encrypted_b64 = encode(&encrypted_data);
-        encrypted_texts.push(encrypted_b64);
-    }
-
-    to_value(&encrypted_texts).map_err(|e| JsValue::from_str(&e.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn decrypt_messages(
-    private_key_b64: &str,
-    encrypted_texts: Vec<String>,
-    password: &str,
-) -> Result<JsValue, JsValue> {
-    let private_key_bytes = decode(private_key_b64).map_err(|e| e.to_string())?;
-    let cert = Cert::from_bytes(&private_key_bytes).map_err(|e| e.to_string())?;
-    let p = &StandardPolicy::new();
-    // Get the secret key from the certificate
-    let keypair = cert
-        .keys()
-        .with_policy(p, None)
-        .secret()
-        .for_storage_encryption()
-        .nth(0)
-        .ok_or_else(|| JsValue::from_str("No suitable key found in Cert."))?
-        .key()
-        .clone();
-
-    // Convert the password to a SessionKey
-    let password = Password::from(password);
-
-    // Decrypt the secret key with the password
-    let sk = keypair
-        .decrypt_secret(&password)
-        .map_err(|_| JsValue::from_str("Failed to decrypt secret key with password."))?;
-    let mut decrypted_texts = Vec::new();
-
-    for encrypted_b64 in encrypted_texts.iter() {
-        let encrypted_bytes = decode(encrypted_b64).map_err(|e| e.to_string())?;
-
-        let plain_text = decrypt_message(p, &sk, &encrypted_bytes).map_err(|e| e.to_string())?;
-        decrypted_texts.push(plain_text);
-    }
-
-    to_value(&decrypted_texts).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 #[wasm_bindgen]
@@ -546,4 +489,58 @@ pub fn encrypt_fields(fields: Array, public_key: String) -> Result<JsValue, JsVa
     }
 
     serde_wasm_bindgen::to_value(&encrypted_fields).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+// #[wasm_bindgen]
+// pub fn decrypt_and_return(
+//     enc_private_key_b64: &str,
+//     sign_private_key_b64: &str,
+//     password: &str,
+// ) -> Result<JsValue, JsValue> {
+//     // Decrypt the encryption private key
+//     let enc_pvt_key_str = get_pvt_key_str(enc_private_key_b64, password)
+//         .map_err(|_| JsValue::from_str("Failed to decrypt encryption private key."))?;
+//     let sign_pvt_key_str = get_pvt_key_str(sign_private_key_b64, password)
+//         .map_err(|_| JsValue::from_str("Failed to decrypt signing private key."))?;
+
+//     let keys = json!({
+//         "enc_keypair": enc_pvt_key_str ,
+//         "sign_keypair": sign_pvt_key_str,
+//     });
+//     to_value(&keys).map_err(|e| JsValue::from_str(&e.to_string()))
+//     // Convert the JSON object to a JsValue and return it
+// }
+
+// #[wasm_bindgen]
+// pub fn protect_private_keys(
+//     enc_private_key: &str,
+//     sign_private_key: &str,
+//     password: &str,
+// ) -> Result<JsValue, JsValue> {
+//     // Protect the encryption private key
+//     let enc_protected_key_str = protect_private_key(enc_private_key, password)
+//         .map_err(|_| JsValue::from_str("Failed to protect encryption private key."))?;
+
+//     // Protect the signing private key
+//     let sign_protected_key_str = protect_private_key(sign_private_key, password)
+//         .map_err(|_| JsValue::from_str("Failed to protect signing private key."))?;
+
+//     // Create a JSON object with the protected keys
+//     let keys = json!({
+//         "enc_keypair": enc_protected_key_str,
+//         "sign_keypair": sign_protected_key_str,
+//     });
+
+//     // Convert the JSON object to a JsValue and return it
+//     to_value(&keys).map_err(|e| JsValue::from_str(&e.to_string()))
+// }
+
+#[wasm_bindgen]
+pub fn get_pub_key(private_key_b64: &str) -> Result<JsValue, JsValue> {
+    // Parse the certificate
+    let pub_key_str =
+        get_pub_key_str(private_key_b64).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    // Return the public key
+    Ok(JsValue::from_str(&pub_key_str))
 }
