@@ -36,6 +36,12 @@ lazy_static! {
 }
 
 #[wasm_bindgen]
+
+pub fn hello_wasm() -> JsValue {
+    JsValue::from_str("Hello from WASM!")
+}
+
+#[wasm_bindgen]
 pub fn generate_and_encrypt_keys(password: &str) -> Result<JsValue, JsValue> {
     // Example for generating an encryption certificate. Adjust as needed.
     let enc_cert = generate_cert_for_usage(KeyFlags::empty().set_storage_encryption(), password)
@@ -233,9 +239,6 @@ pub fn is_global_context_set() -> bool {
 pub struct PublicKey {
     id: String,
     public_key: String,
-    name: String,
-    username: String,
-    access_type: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -259,7 +262,6 @@ pub fn encrypt_new_credential(public_keys: Array, fields: Array) -> Result<JsVal
     let policy = StandardPolicy::new();
 
     for public_key in public_keys.iter() {
-        console::log_1(&JsValue::from_str(&format!("public_key: {:?}", public_key)));
         let public_key_struct: PublicKey = from_value(public_key.clone())
             .map_err(|_| JsValue::from_str("Failed to deserialize public key"))?;
 
@@ -272,7 +274,6 @@ pub fn encrypt_new_credential(public_keys: Array, fields: Array) -> Result<JsVal
         let mut fields_for_user = Vec::new();
 
         for field in fields.iter() {
-            console::log_1(&JsValue::from_str(&format!("Field: {:?}", field)));
             let mut sink = Vec::new();
             let field: Field = from_value(field.clone())
                 .map_err(|_| JsValue::from_str("Failed to deserialize field"))?;
@@ -335,7 +336,6 @@ pub fn decrypt_credentials(credentials: Array) -> Result<JsValue, JsValue> {
     let mut decrypted_credentials = Vec::new();
 
     for credential in credentials.iter() {
-        console::log_1(&JsValue::from_str(&format!("Credential: {:?}", credential)));
         let credential: Credential = from_value(credential.clone()).map_err(|e| {
             JsValue::from_str(&format!(
                 "Error at credential deserialization: {}",
@@ -345,11 +345,6 @@ pub fn decrypt_credentials(credentials: Array) -> Result<JsValue, JsValue> {
         let mut decrypted_fields = Vec::new();
 
         for field in credential.fields.iter() {
-            console::log_1(&JsValue::from_str(&format!(
-                "fieldvalue: {:?}",
-                field.field_value
-            )));
-
             let encrypted_bytes = decode(&field.field_value).map_err(|e| e.to_string())?;
             let decrypted_bytes = decrypt_message(&policy, &enc_keypair, &encrypted_bytes)
                 .map_err(|e| e.to_string())?;
@@ -476,7 +471,6 @@ pub fn encrypt_fields(fields: Array, public_key: String) -> Result<JsValue, JsVa
     for field in fields {
         let field: BasicFields = from_value(field.clone())
             .map_err(|_| JsValue::from_str("Failed to deserialize field"))?;
-        console::log_1(&JsValue::from_str(&format!("Field: {:?}", field)));
         let mut sink = Vec::new();
         encrypt(&policy, &mut sink, &field.field_value, &public_key_openpgp)
             .map_err(|_| JsValue::from_str("Failed to encrypt field value"))?;
