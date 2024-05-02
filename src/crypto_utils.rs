@@ -1,29 +1,24 @@
 // lib.rs
 
 use base64::{decode, encode};
-use openpgp::armor::Reader;
-use openpgp::armor::ReaderMode;
-use openpgp::armor::{Kind, Writer};
-use openpgp::cert::CertParser;
 use openpgp::cert::{CertBuilder, CipherSuite};
 use openpgp::crypto::KeyPair;
 use openpgp::crypto::Password;
-use openpgp::crypto::SessionKey;
 use openpgp::packet::Key;
 use openpgp::parse::stream::MessageStructure;
-use openpgp::parse::PacketParser;
 use openpgp::parse::{stream::*, Parse};
 use openpgp::policy::Policy;
 use openpgp::policy::StandardPolicy;
+use openpgp::serialize::stream::Message;
 use openpgp::serialize::stream::*;
 use openpgp::serialize::Marshal;
+use openpgp::types::HashAlgorithm;
 use openpgp::types::KeyFlags;
 use openpgp::Cert;
 use sequoia_openpgp as openpgp;
 use std::error::Error;
 use std::io::Cursor;
 use std::io::Write;
-use wasm_bindgen::JsValue;
 use web_sys::console;
 
 /// Encrypts the given message.
@@ -188,4 +183,50 @@ pub fn get_pub_key_str(private_key_b64: &str) -> Result<String, Box<dyn Error>> 
     // Get the primary key from the certificate
     let base64_enc_public_key = encode(&enc_public_key);
     Ok(base64_enc_public_key)
+}
+
+pub fn sign_message_with_keypair(message: &str, keypair: KeyPair) -> Result<String, String> {
+    let mut signed_message = Vec::new();
+    let message_writer = Message::new(&mut signed_message);
+
+    let mut signer = Signer::new(message_writer, keypair)
+        .detached()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    signer
+        .write_all(message.as_bytes())
+        .map_err(|_| "Failed to write message to signer.")?;
+    signer
+        .finalize()
+        .map_err(|_| "Failed to finalize signer.")?;
+
+    let mut armored_signature = Vec::new();
+    let mut armor_writer =
+        openpgp::armor::Writer::new(&mut armored_signature, openpgp::armor::Kind::Signature)
+            .map_err(|e| e.to_string())?;
+
+    armor_writer
+        .write_all(&signed_message)
+        .map_err(|_| "Failed to write signature.")?;
+    armor_writer
+        .finalize()
+        .map_err(|_| "Failed to finalize armored writer.")?;
+
+    let base64_encoded_signature = base64::encode(armored_signature);
+    Ok(base64_encoded_signature)
+}
+
+pub fn hash_text_sha512(text: &str) -> Result<Vec<u8>, String> {
+    let mut ctx = HashAlgorithm::SHA512
+        .context()
+        .map_err(|e| format!("Failed to create hash context: {}", e))?;
+
+    ctx.update(text.as_bytes());
+
+    let mut digest = vec![0; ctx.digest_size()];
+    ctx.digest(&mut digest)
+        .map_err(|e| format!("Failed to compute digest: {}", e))?;
+
+    Ok(digest)
 }

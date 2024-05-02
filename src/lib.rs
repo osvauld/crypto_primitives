@@ -6,8 +6,8 @@ use base64::{decode, encode};
 use crypto_utils::*;
 use js_sys::Array;
 use lazy_static::lazy_static;
-use openpgp::armor;
 use openpgp::cert::prelude::*;
+use openpgp::crypto::KeyPair;
 use openpgp::crypto::Password;
 use openpgp::packet::key::SecretParts;
 use openpgp::packet::key::UnspecifiedRole;
@@ -19,7 +19,6 @@ use openpgp::serialize::Serialize as openpgp_Serialize;
 use openpgp::types::KeyFlags;
 use sequoia_openpgp as openpgp;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use serde_wasm_bindgen::{from_value, to_value};
 use std::io::Write;
 use std::sync::Mutex;
@@ -180,53 +179,13 @@ pub fn decrypt_and_store_keys(
 #[wasm_bindgen]
 pub fn sign_message_with_stored_key(message: &str) -> Result<JsValue, JsValue> {
     // Access the global context to retrieve the stored sign_keypair
-    let context = GLOBAL_CONTEXT
-        .lock()
-        .map_err(|_| JsValue::from_str("Failed to lock global context."))?;
-    let sign_keypair = context
-        .as_ref()
-        .ok_or_else(|| JsValue::from_str("No keys stored in context."))?
-        .1
-        .clone();
+    let keypair = get_sign_keypair().map_err(|e| JsValue::from_str(&e))?;
 
-    // Convert the stored keypair into a form suitable for signing
-    let keypair = sign_keypair
-        .into_keypair()
-        .map_err(|_| JsValue::from_str("Failed to convert secret key into keypair."))?;
+    // Call `sign_message_with_keypair` and directly use its result
+    let base64_encoded_signature =
+        sign_message_with_keypair(message, keypair).map_err(|e| JsValue::from_str(&e))?; // Convert error to JsValue and propagate if any
 
-    // Prepare for the signing operation
-    let mut signed_message = Vec::new();
-    let message_writer = Message::new(&mut signed_message);
-
-    // Initialize the signer
-    let mut signer = Signer::new(message_writer, keypair)
-        .detached() // Assuming detached signature
-        .build()
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-    // Sign the message
-    signer
-        .write_all(message.as_bytes())
-        .map_err(|_| JsValue::from_str("Failed to write message to signer."))?;
-    signer
-        .finalize()
-        .map_err(|_| JsValue::from_str("Failed to finalize signer."))?;
-
-    // Armoring the signature
-    let mut armored_signature = Vec::new();
-    let mut armor_writer =
-        openpgp::armor::Writer::new(&mut armored_signature, openpgp::armor::Kind::Signature)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    armor_writer
-        .write_all(&signed_message)
-        .map_err(|_| JsValue::from_str("Failed to write signature."))?;
-    armor_writer
-        .finalize()
-        .map_err(|_| JsValue::from_str("Failed to finalize armored writer."))?;
-
-    // Encoding the armored signature in base64
-    let base64_encoded_signature = base64::encode(armored_signature);
-
+    // Return the result wrapped in a JsValue
     Ok(JsValue::from_str(&base64_encoded_signature))
 }
 
@@ -485,50 +444,6 @@ pub fn encrypt_fields(fields: Array, public_key: String) -> Result<JsValue, JsVa
     serde_wasm_bindgen::to_value(&encrypted_fields).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
-// #[wasm_bindgen]
-// pub fn decrypt_and_return(
-//     enc_private_key_b64: &str,
-//     sign_private_key_b64: &str,
-//     password: &str,
-// ) -> Result<JsValue, JsValue> {
-//     // Decrypt the encryption private key
-//     let enc_pvt_key_str = get_pvt_key_str(enc_private_key_b64, password)
-//         .map_err(|_| JsValue::from_str("Failed to decrypt encryption private key."))?;
-//     let sign_pvt_key_str = get_pvt_key_str(sign_private_key_b64, password)
-//         .map_err(|_| JsValue::from_str("Failed to decrypt signing private key."))?;
-
-//     let keys = json!({
-//         "enc_keypair": enc_pvt_key_str ,
-//         "sign_keypair": sign_pvt_key_str,
-//     });
-//     to_value(&keys).map_err(|e| JsValue::from_str(&e.to_string()))
-//     // Convert the JSON object to a JsValue and return it
-// }
-
-// #[wasm_bindgen]
-// pub fn protect_private_keys(
-//     enc_private_key: &str,
-//     sign_private_key: &str,
-//     password: &str,
-// ) -> Result<JsValue, JsValue> {
-//     // Protect the encryption private key
-//     let enc_protected_key_str = protect_private_key(enc_private_key, password)
-//         .map_err(|_| JsValue::from_str("Failed to protect encryption private key."))?;
-
-//     // Protect the signing private key
-//     let sign_protected_key_str = protect_private_key(sign_private_key, password)
-//         .map_err(|_| JsValue::from_str("Failed to protect signing private key."))?;
-
-//     // Create a JSON object with the protected keys
-//     let keys = json!({
-//         "enc_keypair": enc_protected_key_str,
-//         "sign_keypair": sign_protected_key_str,
-//     });
-
-//     // Convert the JSON object to a JsValue and return it
-//     to_value(&keys).map_err(|e| JsValue::from_str(&e.to_string()))
-// }
-
 #[wasm_bindgen]
 pub fn get_pub_key(private_key_b64: &str) -> Result<JsValue, JsValue> {
     // Parse the certificate
@@ -537,4 +452,35 @@ pub fn get_pub_key(private_key_b64: &str) -> Result<JsValue, JsValue> {
 
     // Return the public key
     Ok(JsValue::from_str(&pub_key_str))
+}
+
+#[wasm_bindgen]
+pub fn sign_hash_message(text: &str) -> Result<JsValue, JsValue> {
+    let hash = hash_text_sha512(text).map_err(|e| JsValue::from_str(&e))?;
+    let hash_str = encode(&hash);
+    let keypair = get_sign_keypair().map_err(|e| JsValue::from_str(&e))?;
+
+    let base64_encoded_signature =
+        sign_message_with_keypair(&hash_str, keypair).map_err(|e| JsValue::from_str(&e))?;
+    let signed_hash_str = encode(&base64_encoded_signature);
+    Ok(serde_wasm_bindgen::to_value(&(hash_str, signed_hash_str))
+        .map_err(|e| JsValue::from_str(&e.to_string()))?)
+}
+
+fn get_sign_keypair() -> Result<KeyPair, String> {
+    let context = GLOBAL_CONTEXT
+        .lock()
+        .map_err(|_| "Failed to lock global context.".to_string())?;
+    let sign_keypair = context
+        .as_ref()
+        .ok_or_else(|| "No keys stored in context.".to_string())?
+        .1
+        .clone();
+
+    // Convert the stored keypair into a form suitable for signing
+    let keypair = sign_keypair
+        .into_keypair()
+        .map_err(|_| "Failed to convert secret key into keypair.".to_string())?;
+
+    Ok(keypair)
 }
