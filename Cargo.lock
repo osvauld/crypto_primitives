@@ -324,6 +324,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto_primitives"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.13.1",
+ "console_error_panic_hook",
+ "js-sys",
+ "lazy_static",
+ "sequoia-openpgp",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "ctr"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1187,23 +1204,6 @@ dependencies = [
  "spki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "rust_openpgp_wasm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.13.1",
- "console_error_panic_hook",
- "js-sys",
- "lazy_static",
- "sequoia-openpgp",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
