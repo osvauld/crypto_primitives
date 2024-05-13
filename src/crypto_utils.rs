@@ -55,14 +55,30 @@ pub fn encrypt(
     Ok(())
 }
 
-pub fn generate_cert_for_usage(flags: KeyFlags, password: &str) -> openpgp::Result<openpgp::Cert> {
+pub fn generate_certificate(
+    flags: KeyFlags,
+    password: &str,
+    username: &str,
+) -> openpgp::Result<openpgp::Cert> {
     let passphrase = Password::from(password);
 
     let (cert, _revocation) = CertBuilder::new()
-        .add_userid("someone@example.org")
+        .add_userid(username)
         .set_cipher_suite(CipherSuite::Cv25519) // This specifies ECC keys with Curve25519
         .add_subkey(flags, None, None)
         .set_password(Some(passphrase))
+        .generate()?;
+    Ok(cert)
+}
+
+pub fn generate_certificate_without_password(
+    flags: KeyFlags,
+    username: &str,
+) -> openpgp::Result<openpgp::Cert> {
+    let (cert, _revocation) = CertBuilder::new()
+        .add_userid(username)
+        .set_cipher_suite(CipherSuite::Cv25519) // This specifies ECC keys with Curve25519
+        .add_subkey(flags, None, None)
         .generate()?;
     Ok(cert)
 }

@@ -41,11 +41,15 @@ pub fn hello_wasm() -> JsValue {
 }
 
 #[wasm_bindgen]
-pub fn generate_and_encrypt_keys(password: &str) -> Result<JsValue, JsValue> {
+pub fn generate_and_encrypt_keys(password: &str, username: &str) -> Result<JsValue, JsValue> {
     // Example for generating an encryption certificate. Adjust as needed.
-    let enc_cert = generate_cert_for_usage(KeyFlags::empty().set_storage_encryption(), password)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let sign_cert = generate_cert_for_usage(KeyFlags::empty().set_signing(), password)
+    let enc_cert = generate_certificate(
+        KeyFlags::empty().set_storage_encryption(),
+        password,
+        username,
+    )
+    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let sign_cert = generate_certificate(KeyFlags::empty().set_signing(), password, username)
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     // Serialize and encrypt the private keys using the password
@@ -62,6 +66,54 @@ pub fn generate_and_encrypt_keys(password: &str) -> Result<JsValue, JsValue> {
     // Serialize the public keys
 
     // Serialize the public keys
+    let mut enc_public_key = Vec::new();
+    enc_cert
+        .armored()
+        .serialize(&mut enc_public_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let mut sign_public_key = Vec::new();
+    sign_cert
+        .armored()
+        .serialize(&mut sign_public_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    // Convert the keys into base64 strings
+    let base64_enc_private_key = encode(&enc_private_key);
+    let base64_sign_private_key = encode(&sign_private_key);
+    let base64_enc_public_key = encode(&enc_public_key);
+    let base64_sign_public_key = encode(&sign_public_key);
+
+    // Return the base64-encoded private keys and public keys
+    Ok(to_value(&serde_json::json!({
+        "enc_private_key": base64_enc_private_key,
+        "sign_private_key": base64_sign_private_key,
+        "enc_public_key": base64_enc_public_key,
+        "sign_public_key": base64_sign_public_key,
+    }))
+    .map_err(|err| JsValue::from_str(&err.to_string()))?)
+}
+
+#[wasm_bindgen]
+pub fn generate_keys_without_password(username: &str) -> Result<JsValue, JsValue> {
+    let enc_cert =
+        generate_certificate_without_password(KeyFlags::empty().set_storage_encryption(), username)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let sign_cert =
+        generate_certificate_without_password(KeyFlags::empty().set_signing(), username)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    // Serialize and encrypt the private keys using the password
+    let mut enc_private_key = Vec::new();
+    enc_cert
+        .as_tsk()
+        .serialize(&mut enc_private_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let mut sign_private_key = Vec::new();
+    sign_cert
+        .as_tsk()
+        .serialize(&mut sign_private_key)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    // Serialize the public keys
+
     let mut enc_public_key = Vec::new();
     enc_cert
         .armored()
@@ -456,15 +508,16 @@ pub fn get_pub_key(private_key_b64: &str) -> Result<JsValue, JsValue> {
 
 #[wasm_bindgen]
 pub fn sign_hash_message(text: &str) -> Result<JsValue, JsValue> {
-    let hash = hash_text_sha512(text).map_err(|e| JsValue::from_str(&e))?;
+    let encoded_text = base64::encode(text);
+    let hash = hash_text_sha512(&encoded_text).map_err(|e| JsValue::from_str(&e))?;
     let hash_str = encode(&hash);
     let keypair = get_sign_keypair().map_err(|e| JsValue::from_str(&e))?;
 
     let base64_encoded_signature =
-        sign_message_with_keypair(&hash_str, keypair).map_err(|e| JsValue::from_str(&e))?;
-    let signed_hash_str = encode(&base64_encoded_signature);
-    Ok(serde_wasm_bindgen::to_value(&(hash_str, signed_hash_str))
-        .map_err(|e| JsValue::from_str(&e.to_string()))?)
+        sign_message_with_keypair(&hash_str, keypair).map_err(|e| JsValue::from_str(&e))?; // Convert error to JsValue and propagate if any
+
+    // Return the result wrapped in a JsValue
+    Ok(JsValue::from_str(&base64_encoded_signature))
 }
 
 fn get_sign_keypair() -> Result<KeyPair, String> {
