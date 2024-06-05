@@ -20,6 +20,7 @@ use openpgp::types::KeyFlags;
 use sequoia_openpgp as openpgp;
 use serde::{Deserialize, Serialize};
 use serde_wasm_bindgen::{from_value, to_value};
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
@@ -436,7 +437,7 @@ pub fn decrypt_fields(credentials: JsValue) -> Result<JsValue, JsValue> {
         .as_ref()
         .ok_or(JsValue::from_str("Keys are not loaded in the context."))?;
 
-    let policy = StandardPolicy::new();
+    let policy: StandardPolicy = StandardPolicy::new();
 
     let mut decrypted_credentials = Vec::new();
 
@@ -536,4 +537,55 @@ fn get_sign_keypair() -> Result<KeyPair, String> {
         .map_err(|_| "Failed to convert secret key into keypair.".to_string())?;
 
     Ok(keypair)
+}
+
+#[wasm_bindgen]
+pub fn encrypt_field_value(field_value: String, users: JsValue) -> Result<JsValue, JsValue> {
+    // Parse the users JSON
+    let users: Vec<HashMap<String, String>> =
+        from_value(users).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    // Create a buffer to hold the encrypted data
+    let mut encrypted_data = Vec::new();
+
+    // Create a policy
+
+    let policy = StandardPolicy::new();
+    // Process each user
+    let mut results = Vec::new();
+    for user in users {
+        // Get the user ID and public key
+        let user_id = user
+            .get("userId")
+            .ok_or_else(|| JsValue::from_str("Missing userId"))?
+            .clone();
+        let public_key = user
+            .get("publicKey")
+            .ok_or_else(|| JsValue::from_str("Missing publicKey"))?
+            .clone();
+
+        // Decode the public key from base64
+        let public_key_bytes =
+            base64::decode(&public_key).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Parse the public key
+        let public_key =
+            Cert::from_bytes(&public_key_bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Encrypt the field value with the public key
+        encrypt(&policy, &mut encrypted_data, &field_value, &public_key)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        // Encode the encrypted data to base64
+        let encrypted_field_value_base64 = base64::encode(&encrypted_data);
+
+        // Add the user ID and the encrypted field value to the results
+        results.push(serde_json::json!({
+            "userId": user_id,
+            "fieldValue": encrypted_field_value_base64,
+        }));
+    }
+
+    // Return the results
+    to_value(&results).map_err(|e| JsValue::from_str(&e.to_string()))
 }
