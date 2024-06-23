@@ -546,32 +546,32 @@ pub fn encrypt_field_value(field_value: String, users: JsValue) -> Result<JsValu
         from_value(users).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     // Create a buffer to hold the encrypted data
-    let mut encrypted_data = Vec::new();
 
-    // Create a policy
 
-    let policy = StandardPolicy::new();
     // Process each user
     let mut results = Vec::new();
     for user in users {
         // Get the user ID and public key
+        let mut encrypted_data = Vec::new();
+        let policy = StandardPolicy::new();
         let user_id = user
             .get("userId")
             .ok_or_else(|| JsValue::from_str("Missing userId"))?
             .clone();
-        let public_key = user
+        let public_key_base64 = user
             .get("publicKey")
             .ok_or_else(|| JsValue::from_str("Missing publicKey"))?
             .clone();
 
         // Decode the public key from base64
         let public_key_bytes =
-            base64::decode(&public_key).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            base64::decode(&public_key_base64).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         // Parse the public key
         let public_key =
             Cert::from_bytes(&public_key_bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
-
+        let log_message = format!("Encrypting with public key: {}", &public_key_base64);
+        console::log_1(&log_message.into());
         // Encrypt the field value with the public key
         encrypt(&policy, &mut encrypted_data, &field_value, &public_key)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
