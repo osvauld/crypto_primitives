@@ -544,10 +544,6 @@ pub fn encrypt_field_value(field_value: String, users: JsValue) -> Result<JsValu
     // Parse the users JSON
     let users: Vec<HashMap<String, String>> =
         from_value(users).map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-    // Create a buffer to hold the encrypted data
-
-
     // Process each user
     let mut results = Vec::new();
     for user in users {
@@ -571,7 +567,6 @@ pub fn encrypt_field_value(field_value: String, users: JsValue) -> Result<JsValu
         let public_key =
             Cert::from_bytes(&public_key_bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let log_message = format!("Encrypting with public key: {}", &public_key_base64);
-        console::log_1(&log_message.into());
         // Encrypt the field value with the public key
         encrypt(&policy, &mut encrypted_data, &field_value, &public_key)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
