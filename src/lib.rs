@@ -584,3 +584,35 @@ pub fn encrypt_field_value(field_value: String, users: JsValue) -> Result<JsValu
     // Return the results
     to_value(&results).map_err(|e| JsValue::from_str(&e.to_string()))
 }
+#[derive(Serialize, Deserialize)]
+pub struct UrlMap {
+    value: String,
+    credentialId: String,
+}
+#[wasm_bindgen]
+
+pub fn decrypt_urls(urls: JsValue) -> Result<JsValue, JsValue> {
+    let urls: Vec<UrlMap> = from_value(urls).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let mut decrypted_urls: Vec<UrlMap> = Vec::new();
+    let context = GLOBAL_CONTEXT
+        .lock()
+        .map_err(|_| JsValue::from_str("Failed to lock global context."))?;
+
+    let (enc_keypair, _) = context
+        .as_ref()
+        .ok_or(JsValue::from_str("Keys are not loaded in the context."))?;
+
+    let policy: StandardPolicy = StandardPolicy::new();
+    for url in urls {
+        let encrypted_bytes = decode(&url.value).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let decrypted_bytes = decrypt_message(&policy, &enc_keypair, &encrypted_bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let decrypted_text =
+            String::from_utf8(decrypted_bytes).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        decrypted_urls.push(UrlMap {
+            value: decrypted_text,
+            credentialId: url.credentialId,
+        });
+    }
+    to_value(&decrypted_urls).map_err(|e| JsValue::from_str(&e.to_string()))
+}
