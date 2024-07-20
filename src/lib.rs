@@ -358,8 +358,10 @@ pub fn decrypt_credentials(credentials: Array) -> Result<JsValue, JsValue> {
 
         for field in credential.fields.iter() {
             let encrypted_bytes = decode(&field.field_value).map_err(|e| e.to_string())?;
-            let decrypted_bytes = decrypt_message(&policy, &enc_keypair, &encrypted_bytes)
-                .map_err(|e| e.to_string())?;
+            let decrypted_bytes = match decrypt_message(&policy, &enc_keypair, &encrypted_bytes) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
 
             let decrypted_text = String::from_utf8(decrypted_bytes).map_err(|e| e.to_string())?;
 
@@ -445,12 +447,20 @@ pub fn decrypt_fields(credentials: JsValue) -> Result<JsValue, JsValue> {
         let mut decrypted_fields = Vec::new();
 
         for field in credential.fields {
-            let encrypted_bytes =
-                decode(&field.field_value).map_err(|e| JsValue::from_str(&e.to_string()))?;
-            let decrypted_bytes = decrypt_message(&policy, &enc_keypair, &encrypted_bytes)
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
-            let decrypted_text = String::from_utf8(decrypted_bytes)
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let encrypted_bytes = match decode(&field.field_value) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+
+            let decrypted_bytes = match decrypt_message(&policy, &enc_keypair, &encrypted_bytes) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+
+            let decrypted_text = match String::from_utf8(decrypted_bytes) {
+                Ok(text) => text,
+                Err(_) => continue,
+            };
 
             decrypted_fields.push(BasicFields {
                 field_id: field.field_id,
