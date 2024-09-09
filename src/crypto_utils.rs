@@ -54,6 +54,43 @@ pub fn encrypt(
 
     Ok(())
 }
+pub struct GeneratedKeys {
+    pub enc_private_key: String,
+    pub sign_private_key: String,
+    pub enc_public_key: String,
+    pub sign_public_key: String,
+}
+
+pub fn generate_keys(
+    password: &str,
+    username: &str,
+) -> Result<GeneratedKeys, Box<dyn std::error::Error>> {
+    let enc_cert = generate_certificate(
+        KeyFlags::empty().set_storage_encryption(),
+        password,
+        username,
+    )?;
+    let sign_cert = generate_certificate(KeyFlags::empty().set_signing(), password, username)?;
+
+    let mut enc_private_key = Vec::new();
+    enc_cert.as_tsk().serialize(&mut enc_private_key)?;
+
+    let mut sign_private_key = Vec::new();
+    sign_cert.as_tsk().serialize(&mut sign_private_key)?;
+
+    let mut enc_public_key = Vec::new();
+    enc_cert.armored().serialize(&mut enc_public_key)?;
+
+    let mut sign_public_key = Vec::new();
+    sign_cert.armored().serialize(&mut sign_public_key)?;
+
+    Ok(GeneratedKeys {
+        enc_private_key: encode(&enc_private_key),
+        sign_private_key: encode(&sign_private_key),
+        enc_public_key: encode(&enc_public_key),
+        sign_public_key: encode(&sign_public_key),
+    })
+}
 
 pub fn generate_certificate(
     flags: KeyFlags,

@@ -43,52 +43,13 @@ pub fn hello_wasm() -> JsValue {
 
 #[wasm_bindgen]
 pub fn generate_and_encrypt_keys(password: &str, username: &str) -> Result<JsValue, JsValue> {
-    // Example for generating an encryption certificate. Adjust as needed.
-    let enc_cert = generate_certificate(
-        KeyFlags::empty().set_storage_encryption(),
-        password,
-        username,
-    )
-    .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let sign_cert = generate_certificate(KeyFlags::empty().set_signing(), password, username)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let keys = generate_keys(password, username).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    // Serialize and encrypt the private keys using the password
-    let mut enc_private_key = Vec::new();
-    enc_cert
-        .as_tsk()
-        .serialize(&mut enc_private_key)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let mut sign_private_key = Vec::new();
-    sign_cert
-        .as_tsk()
-        .serialize(&mut sign_private_key)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    // Serialize the public keys
-
-    // Serialize the public keys
-    let mut enc_public_key = Vec::new();
-    enc_cert
-        .armored()
-        .serialize(&mut enc_public_key)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let mut sign_public_key = Vec::new();
-    sign_cert
-        .armored()
-        .serialize(&mut sign_public_key)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    // Convert the keys into base64 strings
-    let base64_enc_private_key = encode(&enc_private_key);
-    let base64_sign_private_key = encode(&sign_private_key);
-    let base64_enc_public_key = encode(&enc_public_key);
-    let base64_sign_public_key = encode(&sign_public_key);
-
-    // Return the base64-encoded private keys and public keys
     Ok(to_value(&serde_json::json!({
-        "enc_private_key": base64_enc_private_key,
-        "sign_private_key": base64_sign_private_key,
-        "enc_public_key": base64_enc_public_key,
-        "sign_public_key": base64_sign_public_key,
+        "enc_private_key": keys.enc_private_key,
+        "sign_private_key": keys.sign_private_key,
+        "enc_public_key": keys.enc_public_key,
+        "sign_public_key": keys.sign_public_key,
     }))
     .map_err(|err| JsValue::from_str(&err.to_string()))?)
 }
