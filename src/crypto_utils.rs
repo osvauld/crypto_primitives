@@ -111,6 +111,20 @@ pub fn generate_keys(password: &str, username: &str) -> Result<GeneratedKeys, Bo
         salt: encode(salt),
     })
 }
+pub fn gen_keys_without_password(username: &str) -> Result<GeneratedKeys, Box<dyn Error>> {
+    let cert = generate_certificate(username)?;
+    println!("Certificate loaded. Fingerprint: {}", cert.fingerprint());
+    let mut cert_data = Vec::new();
+    cert.as_tsk().serialize(&mut cert_data)?;
+    let encoded_pirvate_key = encode(cert_data);
+    let public_key = get_public_key_armored(&cert)?;
+
+    Ok(GeneratedKeys {
+        private_key: encoded_pirvate_key,
+        public_key,
+        salt: encode("".as_bytes()),
+    })
+}
 
 pub fn get_public_key_armored(cert: &openpgp::Cert) -> Result<String> {
     let mut buf = Vec::new();
@@ -202,17 +216,6 @@ pub fn sign_message_with_stored_cert(message: &str) -> Result<String> {
 
     println!("Message signed successfully");
     Ok(base64::encode(&armored_signature))
-}
-pub fn generate_certificate_without_password(
-    flags: KeyFlags,
-    username: &str,
-) -> openpgp::Result<openpgp::Cert> {
-    let (cert, _revocation) = CertBuilder::new()
-        .add_userid(username)
-        .set_cipher_suite(CipherSuite::Cv25519) // This specifies ECC keys with Curve25519
-        .add_subkey(flags, None, None)
-        .generate()?;
-    Ok(cert)
 }
 
 impl<'a> VerificationHelper for Helper<'a> {

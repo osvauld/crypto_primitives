@@ -57,48 +57,15 @@ pub fn generate_and_encrypt_keys(password: &str, username: &str) -> Result<JsVal
 
 #[wasm_bindgen]
 pub fn generate_keys_without_password(username: &str) -> Result<JsValue, JsValue> {
-    let enc_cert =
-        generate_certificate_without_password(KeyFlags::empty().set_storage_encryption(), username)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let sign_cert =
-        generate_certificate_without_password(KeyFlags::empty().set_signing(), username)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-    // Serialize and encrypt the private keys using the password
-    let mut enc_private_key = Vec::new();
-    enc_cert
-        .as_tsk()
-        .serialize(&mut enc_private_key)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let mut sign_private_key = Vec::new();
-    sign_cert
-        .as_tsk()
-        .serialize(&mut sign_private_key)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    // Serialize the public keys
-
-    let mut enc_public_key = Vec::new();
-    enc_cert
-        .armored()
-        .serialize(&mut enc_public_key)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let mut sign_public_key = Vec::new();
-    sign_cert
-        .armored()
-        .serialize(&mut sign_public_key)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    // Convert the keys into base64 strings
-    let base64_enc_private_key = encode(&enc_private_key);
-    let base64_sign_private_key = encode(&sign_private_key);
-    let base64_enc_public_key = encode(&enc_public_key);
-    let base64_sign_public_key = encode(&sign_public_key);
+    let keys =
+        gen_keys_without_password(username).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     // Return the base64-encoded private keys and public keys
     Ok(to_value(&serde_json::json!({
-        "enc_private_key": base64_enc_private_key,
-        "sign_private_key": base64_sign_private_key,
-        "enc_public_key": base64_enc_public_key,
-        "sign_public_key": base64_sign_public_key,
+        "enc_private_key": keys.private_key,
+        "sign_private_key": keys.private_key,
+        "enc_public_key": keys.public_key,
+        "sign_public_key": keys.salt,
     }))
     .map_err(|err| JsValue::from_str(&err.to_string()))?)
 }
