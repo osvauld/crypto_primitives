@@ -46,10 +46,11 @@ pub fn generate_and_encrypt_keys(password: &str, username: &str) -> Result<JsVal
     let keys = generate_keys(password, username).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     Ok(to_value(&serde_json::json!({
-        "enc_private_key": keys.enc_private_key,
-        "sign_private_key": keys.sign_private_key,
-        "enc_public_key": keys.enc_public_key,
-        "sign_public_key": keys.sign_public_key,
+        "enc_private_key": keys.private_key,
+        "sign_private_key": keys.private_key,
+        "enc_public_key": keys.public_key,
+        "sign_public_key": keys.public_key,
+        "salt": keys.salt,
     }))
     .map_err(|err| JsValue::from_str(&err.to_string()))?)
 }
@@ -168,39 +169,23 @@ pub fn sign_message(encoded_key: &str, password: &str, message: &str) -> Result<
 
 #[wasm_bindgen]
 pub fn decrypt_and_store_keys(
-    enc_private_key_b64: &str,
-    sign_private_key_b64: &str,
-    password: &str,
+    encrypted_cert_b64: &str,
+    salt_b64: &str,
+    passphrase: &str,
 ) -> Result<(), JsValue> {
-    // Decrypt the encryption private key
-    let enc_keypair = decrypt_private_key(enc_private_key_b64, password, false)
-        .map_err(|_| JsValue::from_str("Failed to decrypt encryption private key."))?;
-
-    // Decrypt the signing private key
-    let sign_keypair = decrypt_private_key(sign_private_key_b64, password, true)
-        .map_err(|_| JsValue::from_str("Failed to decrypt signing private key."))?;
-
-    // Store the decrypted keys in the global context
-
-    // Store the decrypted keys in the global context
-    let mut context = GLOBAL_CONTEXT
-        .lock()
-        .map_err(|_| JsValue::from_str("Failed to lock global context."))?;
-    *context = Some((enc_keypair.clone(), sign_keypair.clone()));
-    Ok(())
+    crypto_utils::decrypt_and_load_certificate(encrypted_cert_b64, salt_b64, passphrase).map_err(
+        |e| {
+            let error_msg = format!("Failed to decrypt and load certificate: {}", e);
+            console::error_1(&JsValue::from_str(&error_msg));
+            JsValue::from_str(&error_msg)
+        },
+    )
 }
-
 #[wasm_bindgen]
 pub fn sign_message_with_stored_key(message: &str) -> Result<JsValue, JsValue> {
-    // Access the global context to retrieve the stored sign_keypair
-    let keypair = get_sign_keypair().map_err(|e| JsValue::from_str(&e))?;
-
-    // Call `sign_message_with_keypair` and directly use its result
-    let base64_encoded_signature =
-        sign_message_with_keypair(message, keypair).map_err(|e| JsValue::from_str(&e))?; // Convert error to JsValue and propagate if any
-
-    // Return the result wrapped in a JsValue
-    Ok(JsValue::from_str(&base64_encoded_signature))
+    crypto_utils::sign_message_with_stored_cert(message)
+        .map(|signature| JsValue::from_str(&signature))
+        .map_err(|e| JsValue::from_str(&format!("Failed to sign message: {}", e)))
 }
 
 #[wasm_bindgen]
