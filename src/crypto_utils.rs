@@ -21,7 +21,7 @@ use openpgp::types::HashAlgorithm;
 use openpgp::types::KeyFlags;
 use openpgp::Cert;
 use rand::RngCore;
-use sequoia_openpgp as openpgp;
+use sequoia_openpgp::{self as openpgp, policy};
 use std::io::Cursor;
 use std::io::Write;
 use std::sync::Mutex;
@@ -30,16 +30,20 @@ lazy_static! {
 }
 use std::{error::Error, io::Stderr};
 
-pub fn generate_certificate(username: &str) -> openpgp::Result<openpgp::Cert> {
+pub fn generate_certificate(username: &str) -> Result<openpgp::Cert> {
+    println!("Generating certificate for user: {}", username);
+
     let (cert, _revocation) = CertBuilder::new()
         .add_userid(username)
         .set_cipher_suite(CipherSuite::Cv25519)
-        .add_signing_subkey()
-        .add_storage_encryption_subkey()
+        .add_subkey(KeyFlags::empty().set_signing(), None, None)
+        .add_subkey(KeyFlags::empty().set_storage_encryption(), None, None)
         .generate()?;
+
+    println!("Certificate generated. Fingerprint: {}", cert.fingerprint());
+
     Ok(cert)
 }
-
 pub fn derive_key(password: &str, salt: &[u8; 16]) -> [u8; 32] {
     let mut output_key_material = [0u8; 32];
     Argon2::default()
@@ -97,7 +101,7 @@ pub fn generate_keys(password: &str, username: &str) -> Result<GeneratedKeys, Bo
     let mut salt = [0u8; 16];
     OsRng.fill_bytes(&mut salt);
     let mut cert_data = Vec::new();
-    cert.serialize(&mut cert_data)?;
+    cert.as_tsk().serialize(&mut cert_data)?;
     let encrypted_private_key = encrypt_certificate(&cert_data, password, &salt)?;
     let public_key = get_public_key_armored(&cert)?;
 
@@ -169,47 +173,19 @@ pub fn sign_message_with_stored_cert(message: &str) -> Result<String> {
     // Sign the message
     let policy = &StandardPolicy::new();
 
-    // Get the signing keypair
-    let mut keys = Vec::new();
-    let mut n = 0;
-
-    for ka in cert
+    let signing_key = cert
         .keys()
         .with_policy(policy, None)
-        .supported()
         .for_signing()
-        .secret()
-        .map(|ka| ka.key())
-    {
-        println!("Found a potential signing key: {}", ka.fingerprint());
-        let mut key = ka.clone();
+        .unencrypted_secret()
+        .next()
+        .ok_or_else(|| anyhow!("No suitable signing key found"))?;
 
-        match key.into_keypair() {
-            Ok(keypair) => {
-                println!("Successfully created keypair from key");
-                keys.push(keypair);
-                n += 1;
-            }
-            Err(e) => println!("Failed to create keypair from key: {:?}", e),
-        }
-    }
-
-    if n == 0 {
-        println!("No suitable signing key found");
-        return Err(anyhow!("No suitable signing key found"));
-    }
-
-    println!("Found {} suitable signing key(s)", n);
-
-    // Use the first suitable key for signing
-    let keypair = &keys[0];
-
+    let keypair = signing_key.key().clone().into_keypair()?;
     let mut signature = Vec::new();
     {
         let message_writer = Message::new(&mut signature);
-        let mut signer = Signer::new(message_writer, keypair.clone())
-            .detached()
-            .build()?;
+        let mut signer = Signer::new(message_writer, keypair).detached().build()?;
 
         // Write the message directly to the signer
         signer.write_all(message.as_bytes())?;

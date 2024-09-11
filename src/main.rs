@@ -11,10 +11,10 @@ fn main() -> Result<()> {
 
     let keys = generate_keys(password, username).unwrap();
 
-    println!("Generated keys:");
-    println!("Encrypted Private Key: {}", keys.private_key);
-    println!("Public Key: {}", keys.public_key);
-    println!("Salt: {}", keys.salt);
+    // println!("Generated keys:");
+    // println!("Encrypted Private Key: {}", keys.private_key);
+    // println!("Public Key: {}", keys.public_key);
+    // println!("Salt: {}", keys.salt);
 
     match decrypt_and_load_certificate(&keys.private_key, &keys.salt, password) {
         Ok(_) => println!("Successfully decrypted and loaded the certificate."),
