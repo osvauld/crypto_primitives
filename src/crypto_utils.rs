@@ -1,248 +1,337 @@
-// lib.rs
-
+use crate::crypto_core::{
+    decrypt_certificate, decrypt_message, encrypt_certificate, encrypt_text, generate_certificate,
+    get_decryption_key, get_public_key_armored, get_recipient, get_signing_keypair,
+    hash_text_sha512,
+};
+use crate::types::{
+    BasicFields, Credential, CredentialFields, EncryptedField, EncryptedFieldValue, Field,
+    GeneratedKeys, MetaField, PublicKey, UrlMap,
+};
+use anyhow::{anyhow, Result};
+use argon2::password_hash::rand_core::OsRng;
 use base64::{decode, encode};
-use openpgp::cert::{CertBuilder, CipherSuite};
-use openpgp::crypto::KeyPair;
-use openpgp::crypto::Password;
-use openpgp::packet::Key;
-use openpgp::parse::stream::MessageStructure;
-use openpgp::parse::{stream::*, Parse};
-use openpgp::policy::Policy;
-use openpgp::policy::StandardPolicy;
-use openpgp::serialize::stream::Message;
-use openpgp::serialize::stream::*;
-use openpgp::serialize::Marshal;
-use openpgp::types::HashAlgorithm;
-use openpgp::types::KeyFlags;
-use openpgp::Cert;
-use sequoia_openpgp as openpgp;
+use lazy_static::lazy_static;
+use openpgp::{
+    parse::Parse,
+    policy::StandardPolicy,
+    serialize::{
+        stream::{Message, *},
+        Marshal,
+    },
+    Cert,
+};
+use rand::RngCore;
+use sequoia_openpgp::{self as openpgp};
 use std::error::Error;
-use std::io::Cursor;
 use std::io::Write;
-use web_sys::console;
+use std::sync::Mutex;
+lazy_static! {
+    static ref GLOBAL_CONTEXT: Mutex<Option<Cert>> = Mutex::new(None);
+}
 
-/// Encrypts the given message.
-pub fn encrypt(
-    p: &dyn Policy,
-    sink: &mut (dyn Write + Send + Sync),
-    plaintext: &str,
-    recipient: &openpgp::Cert,
-) -> openpgp::Result<()> {
-    let recipients = recipient
-        .keys()
-        .with_policy(p, None)
-        .supported()
-        .alive()
-        .revoked(false)
-        .for_storage_encryption();
+pub fn is_context_set() -> bool {
+    GLOBAL_CONTEXT.lock().unwrap().is_some()
+}
 
-    // Start streaming an OpenPGP message.
-    let message = Message::new(sink);
+pub fn clear_context() -> Result<()> {
+    let mut context = GLOBAL_CONTEXT
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Failed to lock global context"))?;
+    *context = None;
+    Ok(())
+}
 
-    // We want to encrypt a literal data packet.
-    let message = Encryptor2::for_recipients(message, recipients).build()?;
+pub fn generate_keys(password: &str, username: &str) -> Result<GeneratedKeys, Box<dyn Error>> {
+    let cert = generate_certificate(username)?;
+    println!("Certificate loaded. Fingerprint: {}", cert.fingerprint());
+    let mut salt = [0u8; 16];
+    OsRng.fill_bytes(&mut salt);
+    let mut cert_data = Vec::new();
+    cert.as_tsk().serialize(&mut cert_data)?;
+    let encrypted_private_key = encrypt_certificate(&cert_data, password, &salt)?;
+    let public_key = get_public_key_armored(&cert)?;
 
-    // Emit a literal data packet.
-    let mut message = LiteralWriter::new(message).build()?;
+    Ok(GeneratedKeys {
+        private_key: encrypted_private_key,
+        public_key,
+        salt: encode(salt),
+    })
+}
 
-    // Encrypt the data.
-    message.write_all(plaintext.as_bytes())?;
+pub fn gen_keys_without_password(username: &str) -> Result<GeneratedKeys, Box<dyn Error>> {
+    let cert = generate_certificate(username)?;
+    println!("Certificate loaded. Fingerprint: {}", cert.fingerprint());
+    let mut cert_data = Vec::new();
+    cert.as_tsk().serialize(&mut cert_data)?;
+    let encoded_pirvate_key = encode(cert_data);
+    let public_key = get_public_key_armored(&cert)?;
 
-    // Finalize the OpenPGP message to make sure that all data is
-    // written.
-    message.finalize()?;
+    Ok(GeneratedKeys {
+        private_key: encoded_pirvate_key,
+        public_key,
+        salt: encode("".as_bytes()),
+    })
+}
+
+pub fn decrypt_and_load_certificate(
+    encrypted_cert_b64: &str,
+    salt_b64: &str,
+    passphrase: &str,
+) -> Result<()> {
+    // Decode the base64 encoded encrypted certificate and salt
+    let encrypted_cert = base64::decode(encrypted_cert_b64)?;
+    let salt = base64::decode(salt_b64)?;
+
+    // Ensure salt is exactly 16 bytes
+    if salt.len() != 16 {
+        return Err(anyhow!("Salt must be exactly 16 bytes"));
+    }
+    let salt_array: [u8; 16] = salt
+        .try_into()
+        .map_err(|_| anyhow!("Failed to convert salt"))?;
+
+    // Decrypt the certificate
+    let decrypted_cert_bytes = decrypt_certificate(&encrypted_cert, &salt_array, passphrase)
+        .map_err(|e| anyhow!("Failed to decrypt certificate: {}", e))?;
+
+    // Load the certificate from the decrypted data
+    let cert = Cert::from_bytes(&decrypted_cert_bytes)?;
+
+    // Store the certificate in the global context
+    let mut context = GLOBAL_CONTEXT
+        .lock()
+        .map_err(|_| anyhow!("Failed to lock global context"))?;
+    *context = Some(cert);
 
     Ok(())
 }
 
-pub fn generate_certificate(
-    flags: KeyFlags,
-    password: &str,
-    username: &str,
-) -> openpgp::Result<openpgp::Cert> {
-    let passphrase = Password::from(password);
+pub fn get_stored_certificate() -> Result<Cert> {
+    let context = GLOBAL_CONTEXT
+        .lock()
+        .map_err(|_| anyhow!("Failed to lock global context"))?;
 
-    let (cert, _revocation) = CertBuilder::new()
-        .add_userid(username)
-        .set_cipher_suite(CipherSuite::Cv25519) // This specifies ECC keys with Curve25519
-        .add_subkey(flags, None, None)
-        .set_password(Some(passphrase))
-        .generate()?;
-    Ok(cert)
-}
-
-pub fn generate_certificate_without_password(
-    flags: KeyFlags,
-    username: &str,
-) -> openpgp::Result<openpgp::Cert> {
-    let (cert, _revocation) = CertBuilder::new()
-        .add_userid(username)
-        .set_cipher_suite(CipherSuite::Cv25519) // This specifies ECC keys with Curve25519
-        .add_subkey(flags, None, None)
-        .generate()?;
-    Ok(cert)
-}
-
-impl<'a> VerificationHelper for Helper<'a> {
-    fn get_certs(&mut self, _ids: &[openpgp::KeyHandle]) -> openpgp::Result<Vec<openpgp::Cert>> {
-        Ok(Vec::new())
-    }
-
-    fn check(&mut self, _structure: MessageStructure) -> openpgp::Result<()> {
-        Ok(())
+    match context.as_ref() {
+        Some(c) => Ok(c.clone()),
+        None => {
+            println!("No certificate stored in context");
+            Err(anyhow!("No certificate stored in context"))
+        }
     }
 }
 
-pub fn decrypt_message(
-    p: &dyn Policy,
-    sk: &Key<openpgp::packet::key::SecretParts, openpgp::packet::key::UnspecifiedRole>,
-    ciphertext: &[u8],
-) -> openpgp::Result<Vec<u8>> {
-    let helper = Helper {
-        secret: &sk,
-        policy: p,
-    };
+pub fn sign_message_with_stored_cert(message: &str) -> Result<String> {
+    println!("Entering sign_message_with_stored_cert");
 
-    // Parse the message and create a decryptor with the helper.
-    let mut decryptor = DecryptorBuilder::from_bytes(ciphertext)?.with_policy(p, None, helper)?;
-
-    // Read the decrypted data
-    let mut plaintext = Cursor::new(Vec::new());
-
-    // Copy the decrypted data to the plaintext Vec<u8>
-    std::io::copy(&mut decryptor, &mut plaintext)?;
-
-    // Get the plaintext Vec<u8> from the Cursor
-    let plaintext = plaintext.into_inner();
-    Ok(plaintext)
-}
-
-struct Helper<'a> {
-    secret: &'a Key<openpgp::packet::key::SecretParts, openpgp::packet::key::UnspecifiedRole>,
-    policy: &'a dyn Policy,
-}
-
-impl<'a> openpgp::parse::stream::DecryptionHelper for Helper<'a> {
-    fn decrypt<D>(
-        &mut self,
-        pkesks: &[openpgp::packet::PKESK],
-        _skesks: &[openpgp::packet::SKESK],
-        sym_algo: Option<openpgp::types::SymmetricAlgorithm>,
-        mut decrypt: D,
-    ) -> openpgp::Result<Option<openpgp::Fingerprint>>
-    where
-        D: FnMut(openpgp::types::SymmetricAlgorithm, &openpgp::crypto::SessionKey) -> bool,
+    let cert = get_stored_certificate()?;
+    let keypair = get_signing_keypair(&cert)?;
+    let mut signature = Vec::new();
     {
-        // The secret key is already decrypted.
-        let mut pair = KeyPair::from(self.secret.clone().into_keypair()?);
+        let message_writer = Message::new(&mut signature);
+        let mut signer = Signer::new(message_writer, keypair).detached().build()?;
 
-        pkesks[0]
-            .decrypt(&mut pair, sym_algo)
-            .map(|(algo, session_key)| decrypt(algo, &session_key));
-
-        Ok(None)
+        // Write the message directly to the signer
+        signer.write_all(message.as_bytes())?;
+        signer.finalize()?;
     }
-}
-
-pub fn decrypt_private_key(
-    private_key_b64: &str,
-    password: &str,
-    for_signing: bool,
-) -> Result<
-    Key<openpgp::packet::key::SecretParts, openpgp::packet::key::UnspecifiedRole>,
-    Box<dyn Error>,
-> {
-    let private_key_bytes = decode(private_key_b64)?;
-    let cert = Cert::from_bytes(&private_key_bytes)?;
-    let p = &StandardPolicy::new();
-
-    // Get the secret key from the certificate
-    let keypair = if for_signing {
-        cert.keys()
-            .with_policy(p, None)
-            .secret()
-            .for_signing()
-            .nth(0)
-            .ok_or_else(|| "No suitable key found in Cert.")?
-            .key()
-            .clone()
-    } else {
-        cert.keys()
-            .with_policy(p, None)
-            .secret()
-            .for_storage_encryption()
-            .nth(0)
-            .ok_or_else(|| "No suitable key found in Cert.")?
-            .key()
-            .clone()
-    };
-
-    // Convert the password to a SessionKey
-    let password = Password::from(password);
-
-    // Decrypt the secret key with the password
-    let decrypted_keypair = keypair.decrypt_secret(&password)?;
-
-    // The keypair now contains the decrypted secret key
-    // You can use it to perform cryptographic operations
-
-    Ok(decrypted_keypair)
-}
-
-pub fn get_pub_key_str(private_key_b64: &str) -> Result<String, Box<dyn Error>> {
-    let private_key_bytes = decode(private_key_b64)?;
-
-    let cert = Cert::from_bytes(&private_key_bytes)?;
-
-    let mut enc_public_key = Vec::new();
-    cert.armored().serialize(&mut enc_public_key)?;
-    // Get the primary key from the certificate
-    let base64_enc_public_key = encode(&enc_public_key);
-    Ok(base64_enc_public_key)
-}
-
-pub fn sign_message_with_keypair(message: &str, keypair: KeyPair) -> Result<String, String> {
-    let mut signed_message = Vec::new();
-    let message_writer = Message::new(&mut signed_message);
-
-    let mut signer = Signer::new(message_writer, keypair)
-        .detached()
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    signer
-        .write_all(message.as_bytes())
-        .map_err(|_| "Failed to write message to signer.")?;
-    signer
-        .finalize()
-        .map_err(|_| "Failed to finalize signer.")?;
 
     let mut armored_signature = Vec::new();
-    let mut armor_writer =
-        openpgp::armor::Writer::new(&mut armored_signature, openpgp::armor::Kind::Signature)
-            .map_err(|e| e.to_string())?;
+    {
+        let mut armor_writer =
+            openpgp::armor::Writer::new(&mut armored_signature, openpgp::armor::Kind::Signature)?;
+        armor_writer.write_all(&signature)?;
+        armor_writer.finalize()?;
+    }
 
-    armor_writer
-        .write_all(&signed_message)
-        .map_err(|_| "Failed to write signature.")?;
-    armor_writer
-        .finalize()
-        .map_err(|_| "Failed to finalize armored writer.")?;
-
-    let base64_encoded_signature = base64::encode(armored_signature);
-    Ok(base64_encoded_signature)
+    println!("Message signed successfully");
+    Ok(base64::encode(&armored_signature))
 }
 
-pub fn hash_text_sha512(text: &str) -> Result<Vec<u8>, String> {
-    let mut ctx = HashAlgorithm::SHA512
-        .context()
-        .map_err(|e| format!("Failed to create hash context: {}", e))?;
+pub fn encrypt_fields_for_multiple_keys(
+    public_keys: Vec<PublicKey>,
+    fields: Vec<Field>,
+) -> Result<Vec<EncryptedField>, Box<dyn std::error::Error>> {
+    let mut encrypted_fields = Vec::new();
+    for public_key in public_keys {
+        let recipient = get_recipient(&public_key.public_key).unwrap();
+        let mut fields_for_user = Vec::new();
+        for field in &fields {
+            let encrypted_value = encrypt_text(&recipient, &field.field_value)?;
+            fields_for_user.push(Field {
+                field_name: field.field_name.clone(),
+                field_value: encrypted_value,
+                field_type: field.field_type.clone(),
+            });
+        }
 
-    ctx.update(text.as_bytes());
+        encrypted_fields.push(EncryptedField {
+            user_id: public_key.id,
+            fields: fields_for_user,
+        });
+    }
+    Ok(encrypted_fields)
+}
 
-    let mut digest = vec![0; ctx.digest_size()];
-    ctx.digest(&mut digest)
-        .map_err(|e| format!("Failed to compute digest: {}", e))?;
+pub fn decrypt_credentials(
+    credentials: Vec<Credential>,
+) -> Result<Vec<Credential>, Box<dyn Error>> {
+    let cert = get_stored_certificate()?;
+    let decrypt_key = get_decryption_key(&cert)?;
+    let mut decrypted_credentials = Vec::new();
+    let policy = StandardPolicy::new();
 
-    Ok(digest)
+    for credential in credentials {
+        let mut decrypted_fields = Vec::new();
+
+        for field in &credential.fields {
+            let encrypted_bytes = base64::decode(&field.field_value)?;
+
+            let decrypted_bytes = decrypt_message(&policy, &decrypt_key, &encrypted_bytes)?;
+
+            let decrypted_text = String::from_utf8(decrypted_bytes)?;
+
+            decrypted_fields.push(MetaField {
+                field_id: field.field_id.clone(),
+                field_name: field.field_name.clone(),
+                field_value: decrypted_text,
+                field_type: field.field_type.clone(),
+            });
+        }
+
+        let decrypted_credential = Credential {
+            credential_id: credential.credential_id,
+            fields: decrypted_fields,
+            name: credential.name,
+            description: credential.description,
+            folder_id: credential.folder_id,
+            credential_type: credential.credential_type,
+            created_at: credential.created_at,
+            created_by: credential.created_by,
+            updated_at: credential.updated_at,
+            access_type: credential.access_type,
+        };
+
+        decrypted_credentials.push(decrypted_credential);
+    }
+
+    Ok(decrypted_credentials)
+}
+
+pub fn decrypt_text(encrypted_text: String) -> Result<String, Box<dyn Error>> {
+    // Access the global context to get the certificate
+    let cert = get_stored_certificate()?;
+    let policy = &StandardPolicy::new();
+
+    // Extract the decryption key from the certificate
+    let decrypt_key = get_decryption_key(&cert)?;
+    // Decode the base64-encoded encrypted text
+    let encrypted_bytes = decode(&encrypted_text)?;
+
+    // Decrypt the message
+    let decrypted_bytes = decrypt_message(policy, &decrypt_key, &encrypted_bytes)?;
+
+    // Convert decrypted bytes to String
+    let decrypted_text = String::from_utf8(decrypted_bytes)?;
+
+    Ok(decrypted_text)
+}
+
+pub fn decrypt_fields(
+    credentials: Vec<CredentialFields>,
+) -> Result<Vec<CredentialFields>, Box<dyn Error>> {
+    let policy = &StandardPolicy::new();
+
+    let cert = get_stored_certificate()?;
+    let decrypt_key = get_decryption_key(&cert)?;
+    // Extract the decryption key from the certificate
+
+    let mut decrypted_credentials = Vec::new();
+
+    for credential in credentials {
+        let mut decrypted_fields = Vec::new();
+
+        for field in credential.fields {
+            let encrypted_bytes = match decode(&field.field_value) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+
+            let decrypted_bytes = match decrypt_message(policy, &decrypt_key, &encrypted_bytes) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+
+            let decrypted_text = match String::from_utf8(decrypted_bytes) {
+                Ok(text) => text,
+                Err(_) => continue,
+            };
+
+            decrypted_fields.push(BasicFields {
+                field_id: field.field_id,
+                field_value: decrypted_text,
+            });
+        }
+
+        decrypted_credentials.push(CredentialFields {
+            credential_id: credential.credential_id,
+            fields: decrypted_fields,
+        });
+    }
+
+    Ok(decrypted_credentials)
+}
+
+pub fn encrypt_fields(fields: Vec<BasicFields>, public_key: &str) -> Result<Vec<BasicFields>> {
+    // Get the recipient key using get_recipient function
+    let recipient_key = get_recipient(public_key)?;
+
+    let mut encrypted_fields = Vec::new();
+
+    for field in fields {
+        // Use encrypt_text function to encrypt the field value
+        let encrypted_value = encrypt_text(&recipient_key, &field.field_value)?;
+
+        encrypted_fields.push(BasicFields {
+            field_id: field.field_id,
+            field_value: encrypted_value,
+        });
+    }
+
+    Ok(encrypted_fields)
+}
+
+pub fn sign_and_hash_message(message: &str) -> Result<String, Box<dyn Error>> {
+    let hash_text = hash_text_sha512(message).unwrap();
+    let hash_base64 = base64::encode(&hash_text);
+    let signature = sign_message_with_stored_cert(&hash_base64)?;
+    Ok((signature))
+}
+
+pub fn encrypt_field_value(
+    field_value: &str,
+    public_keys: Vec<PublicKey>,
+) -> Result<Vec<EncryptedFieldValue>, Box<dyn Error>> {
+    let mut results = Vec::new();
+    for public_key in public_keys {
+        let recipient = get_recipient(&public_key.public_key)
+            .map_err(|e| format!("Failed to get recipient: {}", e))?;
+        let encrypted_text = encrypt_text(&recipient, field_value).unwrap();
+        results.push(EncryptedFieldValue {
+            id: public_key.id,
+            field_value: encrypted_text,
+        })
+    }
+    Ok(results)
+}
+
+pub fn decrypt_urls(url_map: Vec<UrlMap>) -> Result<Vec<UrlMap>, Box<dyn Error>> {
+    let mut results = Vec::new();
+    for url in url_map {
+        let decrypted_url = decrypt_text(url.value).unwrap();
+        results.push(UrlMap {
+            value: decrypted_url,
+            credentialId: url.credentialId,
+        })
+    }
+    Ok(results)
 }
