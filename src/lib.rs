@@ -1,4 +1,5 @@
 // lib.rs
+mod crypto_core;
 mod crypto_utils;
 mod types;
 
