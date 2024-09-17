@@ -1,11 +1,13 @@
+use crate::errors::{AesError, PgpError};
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Context, Result};
 use argon2::Argon2;
-use base64::encode;
+use base64::{decode, encode};
 use openpgp::{
+    armor::{Kind::Signature, Writer as ArmorWriter},
     cert::{CertBuilder, CipherSuite},
     crypto::KeyPair,
     packet::{
@@ -16,7 +18,7 @@ use openpgp::{
         stream::{MessageStructure, *},
         Parse,
     },
-    policy::StandardPolicy,
+    policy::{Policy, StandardPolicy},
     serialize::{
         stream::{Message, *},
         Marshal,
@@ -27,6 +29,7 @@ use openpgp::{
 use sequoia_openpgp::{self as openpgp};
 use std::error::Error;
 use std::io::Write;
+use std::io::{self, Read};
 
 pub fn generate_certificate(username: &str) -> Result<openpgp::Cert> {
     println!("Generating certificate for user: {}", username);
@@ -42,49 +45,67 @@ pub fn generate_certificate(username: &str) -> Result<openpgp::Cert> {
 
     Ok(cert)
 }
-pub fn derive_key(password: &str, salt: &[u8; 16]) -> [u8; 32] {
+
+pub fn derive_key(password: &str, salt: &[u8; 16]) -> Result<[u8; 32], AesError> {
     let mut output_key_material = [0u8; 32];
     Argon2::default()
         .hash_password_into(password.as_bytes(), salt, &mut output_key_material)
-        .unwrap();
-    // TODO: change unwrap
-    output_key_material
+        .map_err(|e| AesError::KeyDerivationError(e.to_string()))?;
+    Ok(output_key_material)
 }
+
 pub fn encrypt_certificate(
     data: &[u8],
     password: &str,
     salt: &[u8; 16],
 ) -> Result<String, Box<dyn Error>> {
-    let key = derive_key(password, salt);
-    let cipher = Aes256Gcm::new_from_slice(&key).unwrap(); // Note: Using unwrap()
+    let key = derive_key(password, salt)?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| AesError::CipherCreationError(e.to_string()))?;
+
     let nonce = Nonce::from_slice(&salt[..12]);
     let encrypted_data = cipher
         .encrypt(nonce, data)
-        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+        .map_err(|e| AesError::EncryptionError(e.to_string()))?;
 
     Ok(encode(encrypted_data))
 }
 
+pub fn get_salt_arr(salt_b64: &str) -> Result<[u8; 16], Box<dyn Error>> {
+    let salt = decode(salt_b64)?;
+
+    if salt.len() != 16 {
+        return Err("Invalid salt length".into());
+    }
+
+    salt.try_into()
+        .map_err(|_| "Failed to convert salt to array".into())
+}
 pub fn decrypt_certificate(
-    encrypted_data: &[u8],
-    salt: &[u8; 16],
+    encrypted_cert_b64: &str,
+    salt_b64: &str,
     password: &str,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let key = derive_key(password, salt);
+) -> Result<Cert, AesError> {
+    let encrypted_data =
+        decode(encrypted_cert_b64).map_err(|e| AesError::Base64DecodeError(e.to_string()))?;
 
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| {
-        let error_msg = format!("Failed to create cipher: {}", e);
-        error_msg
-    })?;
+    let salt_array = get_salt_arr(salt_b64).unwrap();
 
-    let nonce = Nonce::from_slice(&salt[..12]);
+    let key = derive_key(password, &salt_array)?;
 
-    let decrypted_data = cipher.decrypt(nonce, encrypted_data).map_err(|e| {
-        let error_msg = format!("Decryption failed: {}", e);
-        error_msg
-    })?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| AesError::CipherCreationError(e.to_string()))?;
 
-    Ok(decrypted_data)
+    let nonce = Nonce::from_slice(&salt_array[..12]);
+
+    let decrypted_data = cipher
+        .decrypt(nonce, encrypted_data.as_ref())
+        .map_err(|e| AesError::DecryptionError(e.to_string()))?;
+
+    let cert = Cert::from_bytes(&decrypted_data)
+        .map_err(|e| AesError::CertificateParseError(e.to_string()))?;
+
+    Ok(cert)
 }
 
 pub fn get_public_key_armored(cert: &openpgp::Cert) -> Result<String> {
@@ -101,41 +122,49 @@ pub fn encrypt_text(
     let mut encrypted = Vec::new();
     {
         let message = Message::new(&mut encrypted);
-        let message = Encryptor2::for_recipients(message, vec![recipient]).build()?;
-        let mut writer = LiteralWriter::new(message).build()?;
+        let message = Encryptor2::for_recipients(message, vec![recipient])
+            .build()
+            .map_err(|e| PgpError::EncryptorCreationError(e.to_string()))?;
+        let mut writer = LiteralWriter::new(message)
+            .build()
+            .map_err(|e| PgpError::LiteralWriterCreationError(e.to_string()))?;
         writer.write_all(text.as_bytes())?;
-        writer.finalize()?;
+        writer
+            .finalize()
+            .map_err(|e| PgpError::FinalizationError(e.to_string()))?;
     }
 
     // Armor the encrypted data
     let mut armored = Vec::new();
     {
-        let mut writer = openpgp::armor::Writer::new(&mut armored, openpgp::armor::Kind::Message)?;
+        let mut writer = openpgp::armor::Writer::new(&mut armored, openpgp::armor::Kind::Message)
+            .map_err(|e| PgpError::ArmorWriterCreationError(e.to_string()))?;
         writer.write_all(&encrypted)?;
-        writer.finalize()?;
+        writer
+            .finalize()
+            .map_err(|e| PgpError::FinalizationError(e.to_string()))?;
     }
 
-    // Convert to base64 for easy transmission
-    Ok(base64::encode(&armored))
+    Ok(String::from_utf8(armored)?)
 }
 
 pub fn decrypt_message(
-    policy: &dyn openpgp::policy::Policy,
-    decrypt_key: &openpgp::packet::Key<
-        openpgp::packet::key::SecretParts,
-        openpgp::packet::key::UnspecifiedRole,
-    >,
+    policy: &dyn Policy,
+    decrypt_key: &openpgp::packet::Key<SecretParts, UnspecifiedRole>,
     ciphertext: &[u8],
-) -> Result<Vec<u8>, Box<dyn Error>> {
+) -> Result<Vec<u8>, PgpError> {
     let helper = DecryptionHelperStruct {
         decrypt_key: decrypt_key.clone(),
     };
 
-    let mut decryptor =
-        DecryptorBuilder::from_bytes(ciphertext)?.with_policy(policy, None, helper)?;
+    let mut decryptor = DecryptorBuilder::from_bytes(ciphertext)
+        .map_err(|e| PgpError::DecryptorCreationError(e.to_string()))?
+        .with_policy(policy, None, helper)
+        .map_err(|e| PgpError::PolicyApplicationError(e.to_string()))?;
 
     let mut plaintext = Vec::new();
-    std::io::copy(&mut decryptor, &mut plaintext)?;
+    io::copy(&mut decryptor, &mut plaintext)
+        .map_err(|e| PgpError::DecryptionError(e.to_string()))?;
 
     Ok(plaintext)
 }
@@ -174,8 +203,12 @@ impl DecryptionHelper for DecryptionHelperStruct {
             return Err(anyhow::anyhow!("No PKESKs provided"));
         }
 
-        let mut pair = KeyPair::from(self.decrypt_key.clone().into_keypair()?);
-
+        let mut pair = KeyPair::from(
+            self.decrypt_key
+                .clone()
+                .into_keypair()
+                .map_err(|e| PgpError::KeyPairCreationError(e.to_string()))?,
+        );
         // Attempt to decrypt the first PKESK
         pkesks[0]
             .decrypt(&mut pair, sym_algo)
@@ -187,45 +220,41 @@ impl DecryptionHelper for DecryptionHelperStruct {
     }
 }
 
-pub fn hash_text_sha512(text: &str) -> Result<Vec<u8>, String> {
+pub fn hash_text_sha512(text: &str) -> Result<Vec<u8>, PgpError> {
     let mut ctx = HashAlgorithm::SHA512
         .context()
-        .map_err(|e| format!("Failed to create hash context: {}", e))?;
+        .map_err(|e| PgpError::HashContextCreationError(e.to_string()))?;
 
     ctx.update(text.as_bytes());
 
     let mut digest = vec![0; ctx.digest_size()];
     ctx.digest(&mut digest)
-        .map_err(|e| format!("Failed to compute digest: {}", e))?;
+        .map_err(|e| PgpError::DigestComputationError(e.to_string()))?;
 
     Ok(digest)
 }
 
-pub fn get_recipient(public_key: &str) -> Result<Key<PublicParts, UnspecifiedRole>, anyhow::Error> {
+pub fn get_recipient(public_key: &str) -> Result<Key<PublicParts, UnspecifiedRole>, PgpError> {
     // Parse the public key bytes into a Cert
-    let cert = Cert::from_bytes(&public_key.as_bytes())?;
+    let cert = Cert::from_bytes(&public_key.as_bytes())
+        .map_err(|e| PgpError::CertificateParseError(e.to_string()))?;
 
     // Create a policy for key selection
     let policy = &StandardPolicy::new();
 
     // Find a suitable encryption key
-    let recipient = cert
-        .keys()
+    cert.keys()
         .with_policy(policy, None)
         .supported()
         .alive()
         .revoked(false)
         .for_storage_encryption()
         .next()
-        .ok_or_else(|| anyhow!("No suitable encryption key found"))?;
-
-    Ok(recipient.key().clone())
+        .map(|key| key.key().clone())
+        .ok_or(PgpError::NoSuitableEncryptionKeyError)
 }
 
-pub fn get_signing_keypair(cert: &Cert) -> Result<KeyPair> {
-    println!("Fetching signing keypair");
-    println!("Certificate loaded. Fingerprint: {}", cert.fingerprint());
-
+pub fn get_signing_keypair(cert: &Cert) -> Result<KeyPair, PgpError> {
     let policy = &StandardPolicy::new();
     let signing_key = cert
         .keys()
@@ -233,19 +262,21 @@ pub fn get_signing_keypair(cert: &Cert) -> Result<KeyPair> {
         .for_signing()
         .unencrypted_secret()
         .next()
-        .ok_or_else(|| anyhow!("No suitable signing key found"))?;
+        .ok_or(PgpError::NoSuitableSigningKeyError)?;
 
-    let keypair = signing_key.key().clone().into_keypair()?;
-    Ok(keypair)
+    signing_key
+        .key()
+        .clone()
+        .into_keypair()
+        .map_err(|e| PgpError::KeyPairCreationError(e.to_string()))
 }
 
 pub fn get_decryption_key(
     cert: &Cert,
-) -> Result<openpgp::packet::Key<SecretParts, UnspecifiedRole>> {
+) -> Result<openpgp::packet::Key<SecretParts, UnspecifiedRole>, PgpError> {
     let policy = &StandardPolicy::new();
 
-    let decrypt_key = cert
-        .keys()
+    cert.keys()
         .unencrypted_secret()
         .with_policy(policy, None)
         .supported()
@@ -253,7 +284,37 @@ pub fn get_decryption_key(
         .revoked(false)
         .for_storage_encryption()
         .next()
-        .ok_or_else(|| anyhow!("No suitable decryption key found"))?;
+        .map(|key| key.key().clone())
+        .ok_or(PgpError::NoSuitableDecryptionKeyError)
+}
 
-    Ok(decrypt_key.key().clone())
+pub fn sign_message(keypair: &KeyPair, message: &str) -> Result<Vec<u8>, PgpError> {
+    let mut signature = Vec::new();
+    {
+        let message_writer = Message::new(&mut signature);
+        let mut signer = Signer::new(message_writer, keypair.clone())
+            .detached()
+            .build()
+            .map_err(|e| PgpError::SignerCreationError(e.to_string()))?;
+        signer
+            .write_all(message.as_bytes())
+            .map_err(|e| PgpError::MessageWriteError(e.to_string()))?;
+        signer
+            .finalize()
+            .map_err(|e| PgpError::SignatureFinalizationError(e.to_string()))?;
+    }
+
+    let mut armored_signature = Vec::new();
+    {
+        let mut armor_writer = ArmorWriter::new(&mut armored_signature, Signature)
+            .map_err(|e| PgpError::ArmorWriterCreationError(e.to_string()))?;
+        armor_writer
+            .write_all(&signature)
+            .map_err(|e| PgpError::SignatureWriteError(e.to_string()))?;
+        armor_writer
+            .finalize()
+            .map_err(|e| PgpError::ArmorFinalizationError(e.to_string()))?;
+    }
+
+    Ok(armored_signature)
 }
