@@ -1,9 +1,12 @@
 // lib.rs
 mod crypto_core;
 mod crypto_utils;
+mod errors;
 mod types;
 
-use crate::types::{BasicFields, Credential, CredentialFields, Field, PublicKey, UrlMap};
+use crate::types::{
+    BasicFields, Credential, CredentialFields, Field, PasswordChangeInput, PublicKey, UrlMap,
+};
 use anyhow::Result;
 use crypto_utils::*;
 use js_sys::Array;
@@ -190,4 +193,51 @@ pub fn decrypt_urls(urls: JsValue) -> Result<JsValue, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("decryption failed: {}", e)))?;
     to_value(&decrypted_urls)
         .map_err(|e| JsValue::from_str(&format!("Serialization failed: {}", e)))
+}
+#[wasm_bindgen]
+pub fn import_certificate(cert_string: JsValue, passphrase: JsValue) -> Result<JsValue, JsValue> {
+    let cert_string: String = cert_string
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("Invalid input: expected a string"))?;
+
+    let passphrase: String = passphrase
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("Invalid input: expected a string"))?;
+
+    let keys = crypto_utils::import_certificate(cert_string, passphrase)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(to_value(&serde_json::json!({
+        "enc_private_key": keys.private_key,
+        "sign_private_key": keys.private_key,
+        "enc_public_key": keys.public_key,
+        "sign_public_key": keys.salt,
+    }))
+    .map_err(|err| JsValue::from_str(&err.to_string()))?)
+}
+
+#[wasm_bindgen]
+pub fn export_certificate(
+    passphrase: &str,
+    enc_pvt_key: &str,
+    salt: &str,
+) -> Result<JsValue, JsValue> {
+    let key = crypto_utils::export_certificate(passphrase, enc_pvt_key, salt)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(to_value(&key).unwrap_or(JsValue::NULL))
+}
+
+#[wasm_bindgen]
+pub fn change_password(input: JsValue) -> Result<JsValue, JsValue> {
+    let input: PasswordChangeInput = from_value(input)
+        .map_err(|e| JsValue::from_str(&format!("Failed to deserialize input: {}", e)))?;
+
+    let new_encrypted_cert = crypto_utils::change_certificate_password(
+        &input.enc_pvt_key,
+        &input.salt,
+        &input.old_password,
+        &input.new_password,
+    )
+    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    Ok(JsValue::from_str(&new_encrypted_cert))
 }

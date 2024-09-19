@@ -1,29 +1,22 @@
 use crate::crypto_core::{
     decrypt_certificate, decrypt_message, encrypt_certificate, encrypt_text, generate_certificate,
-    get_decryption_key, get_public_key_armored, get_recipient, get_signing_keypair,
-    hash_text_sha512,
+    get_decryption_key, get_public_key_armored, get_recipient, get_salt_arr, get_signing_keypair,
+    hash_text_sha512, sign_message,
 };
+use crate::errors::CryptoUtilsError;
 use crate::types::{
     BasicFields, Credential, CredentialFields, EncryptedField, EncryptedFieldValue, Field,
     GeneratedKeys, MetaField, PublicKey, UrlMap,
 };
 use anyhow::{anyhow, Result};
 use argon2::password_hash::rand_core::OsRng;
-use base64::{decode, encode};
+use base64::encode;
 use lazy_static::lazy_static;
-use openpgp::{
-    parse::Parse,
-    policy::StandardPolicy,
-    serialize::{
-        stream::{Message, *},
-        Marshal,
-    },
-    Cert,
-};
+use openpgp::{policy::StandardPolicy, serialize::Marshal, Cert};
 use rand::RngCore;
 use sequoia_openpgp::{self as openpgp};
 use std::error::Error;
-use std::io::Write;
+use std::str::FromStr;
 use std::sync::Mutex;
 lazy_static! {
     static ref GLOBAL_CONTEXT: Mutex<Option<Cert>> = Mutex::new(None);
@@ -36,7 +29,7 @@ pub fn is_context_set() -> bool {
 pub fn clear_context() -> Result<()> {
     let mut context = GLOBAL_CONTEXT
         .lock()
-        .map_err(|_| anyhow::anyhow!("Failed to lock global context"))?;
+        .map_err(|e| CryptoUtilsError::ContextLockError(e.to_string()))?;
     *context = None;
     Ok(())
 }
@@ -77,30 +70,13 @@ pub fn decrypt_and_load_certificate(
     encrypted_cert_b64: &str,
     salt_b64: &str,
     passphrase: &str,
-) -> Result<()> {
-    // Decode the base64 encoded encrypted certificate and salt
-    let encrypted_cert = base64::decode(encrypted_cert_b64)?;
-    let salt = base64::decode(salt_b64)?;
+) -> Result<(), CryptoUtilsError> {
+    let cert = decrypt_certificate(encrypted_cert_b64, salt_b64, passphrase)
+        .map_err(|e| CryptoUtilsError::CertificateDecryptionError(e.to_string()))?;
 
-    // Ensure salt is exactly 16 bytes
-    if salt.len() != 16 {
-        return Err(anyhow!("Salt must be exactly 16 bytes"));
-    }
-    let salt_array: [u8; 16] = salt
-        .try_into()
-        .map_err(|_| anyhow!("Failed to convert salt"))?;
-
-    // Decrypt the certificate
-    let decrypted_cert_bytes = decrypt_certificate(&encrypted_cert, &salt_array, passphrase)
-        .map_err(|e| anyhow!("Failed to decrypt certificate: {}", e))?;
-
-    // Load the certificate from the decrypted data
-    let cert = Cert::from_bytes(&decrypted_cert_bytes)?;
-
-    // Store the certificate in the global context
     let mut context = GLOBAL_CONTEXT
         .lock()
-        .map_err(|_| anyhow!("Failed to lock global context"))?;
+        .map_err(|e| CryptoUtilsError::ContextLockError(e.to_string()))?;
     *context = Some(cert);
 
     Ok(())
@@ -109,42 +85,25 @@ pub fn decrypt_and_load_certificate(
 pub fn get_stored_certificate() -> Result<Cert> {
     let context = GLOBAL_CONTEXT
         .lock()
-        .map_err(|_| anyhow!("Failed to lock global context"))?;
+        .map_err(|e| CryptoUtilsError::ContextLockError(e.to_string()))?;
 
-    match context.as_ref() {
-        Some(c) => Ok(c.clone()),
-        None => {
-            println!("No certificate stored in context");
-            Err(anyhow!("No certificate stored in context"))
-        }
-    }
+    context
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| anyhow!(CryptoUtilsError::NoCertificateError))
 }
 
-pub fn sign_message_with_stored_cert(message: &str) -> Result<String> {
+pub fn sign_message_with_stored_cert(message: &str) -> Result<String, CryptoUtilsError> {
     println!("Entering sign_message_with_stored_cert");
 
-    let cert = get_stored_certificate()?;
-    let keypair = get_signing_keypair(&cert)?;
-    let mut signature = Vec::new();
-    {
-        let message_writer = Message::new(&mut signature);
-        let mut signer = Signer::new(message_writer, keypair).detached().build()?;
+    let cert = get_stored_certificate().map_err(|_| CryptoUtilsError::NoCertificateError)?;
+    let keypair =
+        get_signing_keypair(&cert).map_err(|e| CryptoUtilsError::SigningKeyError(e.to_string()))?;
 
-        // Write the message directly to the signer
-        signer.write_all(message.as_bytes())?;
-        signer.finalize()?;
-    }
+    let signature = sign_message(&keypair, message)
+        .map_err(|e| CryptoUtilsError::SigningError(e.to_string()))?;
 
-    let mut armored_signature = Vec::new();
-    {
-        let mut armor_writer =
-            openpgp::armor::Writer::new(&mut armored_signature, openpgp::armor::Kind::Signature)?;
-        armor_writer.write_all(&signature)?;
-        armor_writer.finalize()?;
-    }
-
-    println!("Message signed successfully");
-    Ok(base64::encode(&armored_signature))
+    Ok(encode(signature))
 }
 
 pub fn encrypt_fields_for_multiple_keys(
@@ -184,9 +143,8 @@ pub fn decrypt_credentials(
         let mut decrypted_fields = Vec::new();
 
         for field in &credential.fields {
-            let encrypted_bytes = base64::decode(&field.field_value)?;
-
-            let decrypted_bytes = decrypt_message(&policy, &decrypt_key, &encrypted_bytes)?;
+            let decrypted_bytes =
+                decrypt_message(&policy, &decrypt_key, field.field_value.as_bytes())?;
 
             let decrypted_text = String::from_utf8(decrypted_bytes)?;
 
@@ -224,11 +182,7 @@ pub fn decrypt_text(encrypted_text: String) -> Result<String, Box<dyn Error>> {
 
     // Extract the decryption key from the certificate
     let decrypt_key = get_decryption_key(&cert)?;
-    // Decode the base64-encoded encrypted text
-    let encrypted_bytes = decode(&encrypted_text)?;
-
-    // Decrypt the message
-    let decrypted_bytes = decrypt_message(policy, &decrypt_key, &encrypted_bytes)?;
+    let decrypted_bytes = decrypt_message(policy, &decrypt_key, encrypted_text.as_bytes())?;
 
     // Convert decrypted bytes to String
     let decrypted_text = String::from_utf8(decrypted_bytes)?;
@@ -251,15 +205,11 @@ pub fn decrypt_fields(
         let mut decrypted_fields = Vec::new();
 
         for field in credential.fields {
-            let encrypted_bytes = match decode(&field.field_value) {
-                Ok(bytes) => bytes,
-                Err(_) => continue,
-            };
-
-            let decrypted_bytes = match decrypt_message(policy, &decrypt_key, &encrypted_bytes) {
-                Ok(bytes) => bytes,
-                Err(_) => continue,
-            };
+            let decrypted_bytes =
+                match decrypt_message(policy, &decrypt_key, field.field_value.as_bytes()) {
+                    Ok(bytes) => bytes,
+                    Err(_) => continue,
+                };
 
             let decrypted_text = match String::from_utf8(decrypted_bytes) {
                 Ok(text) => text,
@@ -302,9 +252,9 @@ pub fn encrypt_fields(fields: Vec<BasicFields>, public_key: &str) -> Result<Vec<
 
 pub fn sign_and_hash_message(message: &str) -> Result<String, Box<dyn Error>> {
     let hash_text = hash_text_sha512(message).unwrap();
-    let hash_base64 = base64::encode(&hash_text);
+    let hash_base64 = encode(&hash_text);
     let signature = sign_message_with_stored_cert(&hash_base64)?;
-    Ok((signature))
+    Ok(signature)
 }
 
 pub fn encrypt_field_value(
@@ -334,4 +284,49 @@ pub fn decrypt_urls(url_map: Vec<UrlMap>) -> Result<Vec<UrlMap>, Box<dyn Error>>
         })
     }
     Ok(results)
+}
+
+pub fn import_certificate(
+    cert_string: String,
+    passphrase: String,
+) -> Result<GeneratedKeys, Box<dyn Error>> {
+    let cert = Cert::from_str(&cert_string)?;
+    let public_key = get_public_key_armored(&cert)?;
+    let mut salt = [0u8; 16];
+    OsRng.fill_bytes(&mut salt);
+    let mut cert_data = Vec::new();
+    cert.as_tsk().serialize(&mut cert_data)?;
+    let enc_priv_key = encrypt_certificate(&cert_data, &passphrase, &salt)?;
+    Ok(GeneratedKeys {
+        private_key: enc_priv_key,
+        public_key,
+        salt: encode(salt),
+    })
+}
+
+pub fn export_certificate(passphrase: &str, enc_pvt_key: &str, salt: &str) -> Result<String> {
+    let cert = decrypt_certificate(enc_pvt_key, salt, passphrase)
+        .map_err(|e| CryptoUtilsError::CertificateDecryptionError(e.to_string()))?;
+    let mut armored = Vec::new();
+    cert.as_tsk().armored().serialize(&mut armored)?;
+    Ok(String::from_utf8(armored)?)
+}
+
+pub fn change_certificate_password(
+    encrypted_cert_b64: &str,
+    salt_b64: &str,
+    old_password: &str,
+    new_password: &str,
+) -> Result<String, Box<dyn Error>> {
+    let cert = decrypt_certificate(encrypted_cert_b64, salt_b64, old_password)
+        .map_err(|e| CryptoUtilsError::CertificateDecryptionError(e.to_string()))?;
+
+    let mut cert_data = Vec::new();
+    cert.as_tsk().serialize(&mut cert_data)?;
+    let salt_array = get_salt_arr(salt_b64)?;
+
+    // Re-encrypt the certificate with the new password
+    let new_encrypted_cert = encrypt_certificate(&cert_data, new_password, &salt_array)?;
+
+    Ok(new_encrypted_cert)
 }

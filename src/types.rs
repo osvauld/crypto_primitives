@@ -77,3 +77,11 @@ pub struct UrlMap {
     pub value: String,
     pub credentialId: String,
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct PasswordChangeInput {
+    pub old_password: String,
+    pub new_password: String,
+    pub enc_pvt_key: String,
+    pub salt: String,
+}
