@@ -103,7 +103,7 @@ pub fn sign_message_with_stored_cert(message: &str) -> Result<String, CryptoUtil
     let signature = sign_message(&keypair, message)
         .map_err(|e| CryptoUtilsError::SigningError(e.to_string()))?;
 
-    String::from_utf8(signature).map_err(|e| CryptoUtilsError::Utf8ConversionError(e.to_string()))
+    Ok(encode(signature))
 }
 
 pub fn encrypt_fields_for_multiple_keys(
@@ -307,13 +307,9 @@ pub fn import_certificate(
 pub fn export_certificate(passphrase: &str, enc_pvt_key: &str, salt: &str) -> Result<String> {
     let cert = decrypt_certificate(enc_pvt_key, salt, passphrase)
         .map_err(|e| CryptoUtilsError::CertificateDecryptionError(e.to_string()))?;
-    let mut cert_data = Vec::new();
-    cert.as_tsk().serialize(&mut cert_data)?;
-    let cert_string = String::from_utf8(cert_data)
-        .map_err(|e| CryptoUtilsError::Utf8ConversionError(e.to_string()))?
-        .to_string();
-
-    Ok(cert_string)
+    let mut armored = Vec::new();
+    cert.as_tsk().armored().serialize(&mut armored)?;
+    Ok(String::from_utf8(armored)?)
 }
 
 pub fn change_certificate_password(
