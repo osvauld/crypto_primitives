@@ -18,17 +18,10 @@ pub enum AesError {
     CertificateParseError(String),
     #[error("Failed to decode: {0}")]
     Base64DecodeError(String),
-    #[error("Failed to convert salt: {0}")]
-    SaltConversionError(String),
-    #[error("Invalid salt length")]
-    InvalidSaltLength,
 }
 
 #[derive(Error, Debug)]
 pub enum PgpError {
-    #[error("Failed to create message: {0}")]
-    MessageCreationError(String),
-
     #[error("Failed to create hash context: {0}")]
     HashContextCreationError(String),
 

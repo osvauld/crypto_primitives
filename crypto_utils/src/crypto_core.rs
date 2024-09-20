@@ -3,7 +3,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use argon2::Argon2;
 use base64::{decode, encode};
 use openpgp::{
@@ -29,7 +29,7 @@ use openpgp::{
 use sequoia_openpgp::{self as openpgp};
 use std::error::Error;
 use std::io::Write;
-use std::io::{self, Read};
+use std::io::{self};
 
 pub fn generate_certificate(username: &str) -> Result<openpgp::Cert> {
     println!("Generating certificate for user: {}", username);

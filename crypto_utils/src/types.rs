@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct PublicKey {
     pub id: String,
     pub public_key: String,
+    pub access_type: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -73,9 +74,10 @@ pub struct EncryptedFieldValue {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UrlMap {
     pub value: String,
-    pub credentialId: String,
+    pub credential_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -84,4 +86,19 @@ pub struct PasswordChangeInput {
     pub new_password: String,
     pub enc_pvt_key: String,
     pub salt: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareCredsInput {
+    pub credentials: Vec<CredentialFields>,
+    pub selected_users: Vec<PublicKey>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialsForUser {
+    pub user_id: String,
+    pub credentials: Vec<CredentialFields>,
+    pub access_type: Option<String>,
 }
